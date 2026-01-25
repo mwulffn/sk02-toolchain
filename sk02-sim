@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# SK-02 Simulator launcher
+
+uv run python -m simulator "$@"

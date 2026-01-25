@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Convert SK-02 binary to simulator text format.
+
+The simulator expects lines of:
+    <address> <value>
+
+Both as decimal values.
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+
+def bin2sim(
+    input_file: str,
+    output_file: str | None = None,
+    origin: int = 0x8000,
+    verbose: bool = False,
+) -> bool:
+    """Convert binary file to simulator format.
+
+    Args:
+        input_file: Path to .bin file
+        output_file: Path to output file (default: input.txt)
+        origin: Starting address (default: 0x8000 / 32768)
+        verbose: Print progress information
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Read binary file
+        input_path = Path(input_file)
+        if not input_path.exists():
+            print(f"Error: Input file not found: {input_file}", file=sys.stderr)
+            return False
+
+        data = input_path.read_bytes()
+
+        if verbose:
+            print(f"Read {len(data)} bytes from {input_file}")
+            print(f"Origin address: {origin} (0x{origin:04X})")
+
+        # Determine output file
+        if output_file is None:
+            output_file = str(input_path.with_suffix(".txt"))
+
+        # Write simulator format
+        output_path = Path(output_file)
+        with output_path.open("w") as f:
+            for offset, byte in enumerate(data):
+                address = origin + offset
+                f.write(f"{address} {byte}\n")
+
+        if verbose:
+            print(f"Wrote {len(data)} lines to {output_file}")
+            print(f"Address range: {origin} to {origin + len(data) - 1}")
+
+        return True
+
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return False
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Convert SK-02 binary to simulator text format",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s program.bin              # Creates program.txt
+  %(prog)s program.bin -o sim.txt   # Specify output file
+  %(prog)s program.bin --org 0x9000 # Different origin address
+
+The output format is one line per byte:
+  <address> <value>
+
+Both values are in decimal. Default origin is 32768 (0x8000).
+        """,
+    )
+
+    parser.add_argument("input", help="Input binary file (.bin)")
+    parser.add_argument(
+        "-o", "--output", help="Output text file (default: input.txt)", default=None
+    )
+    parser.add_argument(
+        "--org",
+        help="Origin address in hex (e.g., 0x8000) or decimal (default: 0x8000)",
+        default="0x8000",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+
+    args = parser.parse_args()
+
+    # Parse origin address
+    try:
+        if args.org.startswith("0x") or args.org.startswith("0X"):
+            origin = int(args.org, 16)
+        else:
+            origin = int(args.org, 10)
+    except ValueError:
+        print(f"Error: Invalid origin address: {args.org}", file=sys.stderr)
+        sys.exit(1)
+
+    # Convert file
+    success = bin2sim(args.input, args.output, origin, args.verbose)
+    sys.exit(0 if success else 1)
+
+
+if __name__ == "__main__":
+    main()

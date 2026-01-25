@@ -1,0 +1,638 @@
+"""Code generator for SK02-C compiler."""
+
+from .ast_nodes import *
+
+
+class CodeGenError(Exception):
+    """Code generation error."""
+
+    pass
+
+
+class CodeGenerator:
+    """Generate SK-02 assembly from AST."""
+
+    def __init__(self):
+        self.output = []
+        self.label_counter = 0
+        self.string_literals = []
+        self.globals = {}
+        self.current_function = None
+        self.local_vars = {}
+        self.all_local_vars = {}  # func_name -> {var_name -> info}
+        self.break_labels = []
+        self.continue_labels = []
+
+    def new_label(self, prefix: str = "L") -> str:
+        """Generate a unique label."""
+        label = f".{prefix}{self.label_counter}"
+        self.label_counter += 1
+        return label
+
+    def emit(self, line: str) -> None:
+        """Emit a line of assembly."""
+        self.output.append(line)
+
+    def emit_comment(self, comment: str) -> None:
+        """Emit a comment."""
+        self.emit(f"; {comment}")
+
+    def get_type_size(self, typ: Type) -> int:
+        """Get size of type in bytes."""
+        if isinstance(typ, BasicType):
+            if typ.name == "char":
+                return 1
+            elif typ.name == "int":
+                return 2
+            elif typ.name == "void":
+                return 0
+        elif isinstance(typ, PointerType):
+            return 2
+        elif isinstance(typ, ArrayType):
+            elem_size = self.get_type_size(typ.base_type)
+            if typ.size is None:
+                raise CodeGenError("Cannot determine size of unsized array")
+            return elem_size * typ.size
+        raise CodeGenError(f"Unknown type size: {typ}")
+
+    def is_char_type(self, typ: Type) -> bool:
+        """Check if type is char."""
+        return isinstance(typ, BasicType) and typ.name == "char"
+
+    def is_int_type(self, typ: Type) -> bool:
+        """Check if type is int."""
+        return isinstance(typ, BasicType) and typ.name == "int"
+
+    def is_pointer_type(self, typ: Type) -> bool:
+        """Check if type is pointer."""
+        return isinstance(typ, PointerType)
+
+    # Expression code generation
+    def generate_expression(self, expr: Expression, result_reg: str = "A") -> None:
+        """Generate code for expression, result in specified register."""
+        if isinstance(expr, NumberLiteral):
+            if result_reg in ("A", "B", "C", "D"):
+                self.emit(f"    SET_{result_reg} #{expr.value}")
+            elif result_reg in ("AB", "CD", "EF", "GH"):
+                self.emit(f"    SET_{result_reg} #{expr.value}")
+            else:
+                raise CodeGenError(f"Invalid result register: {result_reg}")
+
+        elif isinstance(expr, CharLiteral):
+            # Convert character to ASCII value
+            if expr.value.startswith("\\"):
+                escape_map = {"\\n": 10, "\\r": 13, "\\t": 9, "\\0": 0}
+                value = escape_map.get(expr.value, ord(expr.value[1]))
+            else:
+                value = ord(expr.value)
+            self.emit(f"    SET_{result_reg} #{value}")
+
+        elif isinstance(expr, Identifier):
+            # Load variable
+            if expr.name in self.local_vars:
+                var_info = self.local_vars[expr.name]
+                if var_info["size"] == 1:
+                    self.emit(f"    LOAD_A _{self.current_function}_{expr.name}")
+                else:
+                    # Load 16-bit value via CD pointer
+                    self.emit(f"    SET_CD #_{self.current_function}_{expr.name}")
+                    self.emit(f"    LO_AB_CD")
+            elif expr.name in self.globals:
+                var_info = self.globals[expr.name]
+                if var_info["size"] == 1:
+                    self.emit(f"    LOAD_A _{expr.name}")
+                else:
+                    # Load 16-bit value via CD pointer
+                    self.emit(f"    SET_CD #_{expr.name}")
+                    self.emit(f"    LO_AB_CD")
+            else:
+                raise CodeGenError(f"Undefined variable: {expr.name}")
+
+        elif isinstance(expr, BinaryOp):
+            self.generate_binary_op(expr)
+
+        elif isinstance(expr, UnaryOp):
+            self.generate_unary_op(expr)
+
+        elif isinstance(expr, Assignment):
+            self.generate_assignment(expr)
+
+        elif isinstance(expr, FunctionCall):
+            self.generate_function_call(expr)
+
+        elif isinstance(expr, StringLiteral):
+            # Add to string literals and generate reference
+            str_label = f"_str{len(self.string_literals)}"
+            self.string_literals.append((str_label, expr.value))
+            self.emit(f"    SET_AB #{str_label}")
+
+        else:
+            raise CodeGenError(f"Unsupported expression: {type(expr)}")
+
+    def generate_binary_op(self, expr: BinaryOp) -> None:
+        """Generate code for binary operation."""
+        # Simple implementation: left in A, right in B
+        self.generate_expression(expr.left, "A")
+        self.emit("    PUSH_A")
+        self.generate_expression(expr.right, "B")
+        self.emit("    POP_A")
+
+        if expr.op == "+":
+            self.emit("    ADD")  # A = A + B
+        elif expr.op == "-":
+            self.emit("    SUB")  # A = A - B
+        elif expr.op == "&":
+            self.emit("    AND")
+        elif expr.op == "|":
+            self.emit("    OR")
+        elif expr.op == "^":
+            self.emit("    XOR")
+        elif expr.op == "<<":
+            # Simple left shift - shift A by B times
+            # Save A, use loop with B count
+            loop_label = self.new_label("shift_left")
+            end_label = self.new_label("shift_end")
+            self.emit("    PUSH_A")  # Save value to shift
+            self.emit(f"{loop_label}:")
+            self.emit("    B>A")  # Move B to A to test
+            self.emit("    A_ZERO")
+            self.emit(f"    JMP_ZERO {end_label}")
+            self.emit("    A>B")  # Move back
+            self.emit("    POP_A")  # Get value
+            self.emit("    A<<")
+            self.emit("    PUSH_A")  # Save shifted value
+            self.emit("    B--")
+            self.emit(f"    JMP {loop_label}")
+            self.emit(f"{end_label}:")
+            self.emit("    POP_A")  # Final result
+        elif expr.op == ">>":
+            # Simple right shift
+            loop_label = self.new_label("shift_right")
+            end_label = self.new_label("shift_end")
+            self.emit("    PUSH_A")  # Save value to shift
+            self.emit(f"{loop_label}:")
+            self.emit("    B>A")  # Move B to A to test
+            self.emit("    A_ZERO")
+            self.emit(f"    JMP_ZERO {end_label}")
+            self.emit("    A>B")  # Move back
+            self.emit("    POP_A")  # Get value
+            self.emit("    A>>")
+            self.emit("    PUSH_A")  # Save shifted value
+            self.emit("    B--")
+            self.emit(f"    JMP {loop_label}")
+            self.emit(f"{end_label}:")
+            self.emit("    POP_A")  # Final result
+        elif expr.op in ("==", "!=", "<", ">", "<=", ">="):
+            self.generate_comparison(expr.op)
+        else:
+            raise CodeGenError(f"Unsupported binary operator: {expr.op}")
+
+    def generate_comparison(self, op: str) -> None:
+        """Generate comparison code."""
+        # A and B contain values to compare
+        self.emit("    CMP")  # Compare A and B (A = A - B, sets flags)
+        true_label = self.new_label("true")
+        end_label = self.new_label("cmp_end")
+
+        if op == "==":
+            # A == B if A - B == 0
+            self.emit(f"    JMP_ZERO {true_label}")
+        elif op == "!=":
+            # A != B if A - B != 0
+            self.emit(f"    JMP_ZERO {end_label}")  # Skip to false if zero
+            self.emit(f"    JMP {true_label}")  # Otherwise true
+        elif op == "<":
+            # A < B if A - B is negative (not positive and not zero)
+            self.emit(f"    JMP_ZERO {end_label}")  # If equal, false
+            self.emit(f"    JMP_A_POS {end_label}")  # If positive, false
+            self.emit(f"    JMP {true_label}")  # Otherwise (negative), true
+        elif op == ">":
+            # A > B if A - B is positive and non-zero
+            self.emit(f"    JMP_A_POS {true_label}")
+        elif op == "<=":
+            # A <= B if A - B is not positive
+            self.emit(f"    JMP_A_POS {end_label}")  # If positive, false
+            self.emit(f"    JMP {true_label}")  # Otherwise (zero or negative), true
+        elif op == ">=":
+            # A >= B if A - B is zero or positive
+            self.emit(f"    JMP_ZERO {true_label}")  # If zero, true
+            self.emit(f"    JMP_A_POS {true_label}")  # If positive, true
+        else:
+            raise CodeGenError(f"Unknown comparison operator: {op}")
+
+        # False case
+        self.emit("    SET_A #0")
+        self.emit(f"    JMP {end_label}")
+
+        # True case
+        self.emit(f"{true_label}:")
+        self.emit("    SET_A #1")
+
+        self.emit(f"{end_label}:")
+
+    def generate_unary_op(self, expr: UnaryOp) -> None:
+        """Generate code for unary operation."""
+        if expr.op == "-":
+            # Negate
+            self.generate_expression(expr.operand, "A")
+            self.emit("    NOT")
+            self.emit("    A++")  # Two's complement
+        elif expr.op == "!":
+            # Logical not
+            self.generate_expression(expr.operand, "A")
+            true_label = self.new_label("not_true")
+            end_label = self.new_label("not_end")
+            self.emit("    A_ZERO")
+            self.emit(f"    JMP_ZERO {true_label}")
+            self.emit("    SET_A #0")
+            self.emit(f"    JMP {end_label}")
+            self.emit(f"{true_label}:")
+            self.emit("    SET_A #1")
+            self.emit(f"{end_label}:")
+        elif expr.op == "~":
+            # Bitwise not
+            self.generate_expression(expr.operand, "A")
+            self.emit("    NOT")
+        elif expr.op == "++":
+            # Increment
+            if isinstance(expr.operand, Identifier):
+                var_name = expr.operand.name
+                if var_name in self.local_vars:
+                    var_info = self.local_vars[var_name]
+                    if var_info["size"] == 1:
+                        self.emit(f"    LOAD_A _{self.current_function}_{var_name}")
+                        if expr.postfix:
+                            self.emit("    PUSH_A")
+                        self.emit("    A++")
+                        self.emit(f"    STORE_A _{self.current_function}_{var_name}")
+                        if expr.postfix:
+                            self.emit("    POP_A")
+                    else:
+                        # 16-bit increment
+                        self.emit(f"    SET_CD #_{self.current_function}_{var_name}")
+                        self.emit(f"    LO_AB_CD")
+                        if expr.postfix:
+                            self.emit("    PUSH_A")
+                            self.emit("    PUSH_B")
+                        self.emit("    AB++")
+                        self.emit(f"    SET_CD #_{self.current_function}_{var_name}")
+                        self.emit(f"    ST_AB_CD")
+                        if expr.postfix:
+                            self.emit("    POP_B")
+                            self.emit("    POP_A")
+                elif var_name in self.globals:
+                    var_info = self.globals[var_name]
+                    if var_info["size"] == 1:
+                        self.emit(f"    LOAD_A _{var_name}")
+                        if expr.postfix:
+                            self.emit("    PUSH_A")
+                        self.emit("    A++")
+                        self.emit(f"    STORE_A _{var_name}")
+                        if expr.postfix:
+                            self.emit("    POP_A")
+                    else:
+                        # 16-bit increment
+                        self.emit(f"    SET_CD #_{var_name}")
+                        self.emit(f"    LO_AB_CD")
+                        if expr.postfix:
+                            self.emit("    PUSH_A")
+                            self.emit("    PUSH_B")
+                        self.emit("    AB++")
+                        self.emit(f"    SET_CD #_{var_name}")
+                        self.emit(f"    ST_AB_CD")
+                        if expr.postfix:
+                            self.emit("    POP_B")
+                            self.emit("    POP_A")
+                else:
+                    raise CodeGenError(f"Undefined variable: {var_name}")
+            else:
+                raise CodeGenError("++ only supported for variables")
+        elif expr.op == "--":
+            # Decrement
+            if isinstance(expr.operand, Identifier):
+                var_name = expr.operand.name
+                if var_name in self.local_vars:
+                    var_info = self.local_vars[var_name]
+                    if var_info["size"] == 1:
+                        self.emit(f"    LOAD_A _{self.current_function}_{var_name}")
+                        if expr.postfix:
+                            self.emit("    PUSH_A")
+                        self.emit("    A--")
+                        self.emit(f"    STORE_A _{self.current_function}_{var_name}")
+                        if expr.postfix:
+                            self.emit("    POP_A")
+                    else:
+                        # 16-bit decrement
+                        self.emit(f"    SET_CD #_{self.current_function}_{var_name}")
+                        self.emit(f"    LO_AB_CD")
+                        if expr.postfix:
+                            self.emit("    PUSH_A")
+                            self.emit("    PUSH_B")
+                        self.emit("    AB--")
+                        self.emit(f"    SET_CD #_{self.current_function}_{var_name}")
+                        self.emit(f"    ST_AB_CD")
+                        if expr.postfix:
+                            self.emit("    POP_B")
+                            self.emit("    POP_A")
+                elif var_name in self.globals:
+                    var_info = self.globals[var_name]
+                    if var_info["size"] == 1:
+                        self.emit(f"    LOAD_A _{var_name}")
+                        if expr.postfix:
+                            self.emit("    PUSH_A")
+                        self.emit("    A--")
+                        self.emit(f"    STORE_A _{var_name}")
+                        if expr.postfix:
+                            self.emit("    POP_A")
+                    else:
+                        # 16-bit decrement
+                        self.emit(f"    SET_CD #_{var_name}")
+                        self.emit(f"    LO_AB_CD")
+                        if expr.postfix:
+                            self.emit("    PUSH_A")
+                            self.emit("    PUSH_B")
+                        self.emit("    AB--")
+                        self.emit(f"    SET_CD #_{var_name}")
+                        self.emit(f"    ST_AB_CD")
+                        if expr.postfix:
+                            self.emit("    POP_B")
+                            self.emit("    POP_A")
+                else:
+                    raise CodeGenError(f"Undefined variable: {var_name}")
+            else:
+                raise CodeGenError("-- only supported for variables")
+        else:
+            raise CodeGenError(f"Unsupported unary operator: {expr.op}")
+
+    def generate_assignment(self, expr: Assignment) -> None:
+        """Generate assignment code."""
+        # Generate value
+        self.generate_expression(expr.value, "A")
+
+        # Store to target
+        if isinstance(expr.target, Identifier):
+            var_name = expr.target.name
+            if var_name in self.local_vars:
+                var_info = self.local_vars[var_name]
+                if var_info["size"] == 1:
+                    self.emit(f"    STORE_A _{self.current_function}_{var_name}")
+                else:
+                    # Store 16-bit value via CD pointer (value in AB)
+                    self.emit(f"    SET_CD #_{self.current_function}_{var_name}")
+                    self.emit(f"    ST_AB_CD")
+            elif var_name in self.globals:
+                var_info = self.globals[var_name]
+                if var_info["size"] == 1:
+                    self.emit(f"    STORE_A _{var_name}")
+                else:
+                    # Store 16-bit value via CD pointer
+                    self.emit(f"    SET_CD #_{var_name}")
+                    self.emit(f"    ST_AB_CD")
+            else:
+                raise CodeGenError(f"Undefined variable: {var_name}")
+        else:
+            raise CodeGenError("Complex lvalues not yet supported")
+
+    def generate_function_call(self, expr: FunctionCall) -> None:
+        """Generate function call code."""
+        # Phase 1: Support up to 2 parameters
+        if len(expr.arguments) > 2:
+            raise CodeGenError("Maximum 2 function parameters supported")
+
+        # Load arguments into registers
+        if len(expr.arguments) >= 1:
+            self.generate_expression(expr.arguments[0], "A")
+        if len(expr.arguments) >= 2:
+            self.emit("    PUSH_A")
+            self.generate_expression(expr.arguments[1], "B")
+            self.emit("    POP_A")
+
+        # Call function
+        self.emit(f"    GOSUB _{expr.function}")
+
+    # Statement code generation
+    def generate_statement(self, stmt: Statement) -> None:
+        """Generate code for statement."""
+        if isinstance(stmt, ExpressionStatement):
+            if stmt.expression:
+                self.generate_expression(stmt.expression)
+
+        elif isinstance(stmt, CompoundStatement):
+            for s in stmt.statements:
+                self.generate_statement(s)
+
+        elif isinstance(stmt, ReturnStatement):
+            if stmt.value:
+                self.generate_expression(stmt.value, "A")
+            self.emit("    RETURN")
+
+        elif isinstance(stmt, IfStatement):
+            self.generate_expression(stmt.condition, "A")
+            else_label = self.new_label("else")
+            end_label = self.new_label("endif")
+
+            self.emit("    A_ZERO")
+            if stmt.else_stmt:
+                self.emit(f"    JMP_ZERO {else_label}")
+            else:
+                self.emit(f"    JMP_ZERO {end_label}")
+
+            self.generate_statement(stmt.then_stmt)
+
+            if stmt.else_stmt:
+                self.emit(f"    JMP {end_label}")
+                self.emit(f"{else_label}:")
+                self.generate_statement(stmt.else_stmt)
+
+            self.emit(f"{end_label}:")
+
+        elif isinstance(stmt, WhileStatement):
+            loop_label = self.new_label("while_loop")
+            end_label = self.new_label("while_end")
+
+            self.break_labels.append(end_label)
+            self.continue_labels.append(loop_label)
+
+            self.emit(f"{loop_label}:")
+            self.generate_expression(stmt.condition, "A")
+            self.emit("    A_ZERO")
+            self.emit(f"    JMP_ZERO {end_label}")
+            self.generate_statement(stmt.body)
+            self.emit(f"    JMP {loop_label}")
+            self.emit(f"{end_label}:")
+
+            self.break_labels.pop()
+            self.continue_labels.pop()
+
+        elif isinstance(stmt, ForStatement):
+            loop_label = self.new_label("for_loop")
+            continue_label = self.new_label("for_cont")
+            end_label = self.new_label("for_end")
+
+            self.break_labels.append(end_label)
+            self.continue_labels.append(continue_label)
+
+            # Init
+            if stmt.init:
+                self.generate_expression(stmt.init)
+
+            self.emit(f"{loop_label}:")
+            # Condition
+            if stmt.condition:
+                self.generate_expression(stmt.condition, "A")
+                self.emit("    A_ZERO")
+                self.emit(f"    JMP_ZERO {end_label}")
+
+            # Body
+            self.generate_statement(stmt.body)
+
+            # Increment
+            self.emit(f"{continue_label}:")
+            if stmt.increment:
+                self.generate_expression(stmt.increment)
+
+            self.emit(f"    JMP {loop_label}")
+            self.emit(f"{end_label}:")
+
+            self.break_labels.pop()
+            self.continue_labels.pop()
+
+        elif isinstance(stmt, BreakStatement):
+            if not self.break_labels:
+                raise CodeGenError("break outside loop")
+            self.emit(f"    JMP {self.break_labels[-1]}")
+
+        elif isinstance(stmt, ContinueStatement):
+            if not self.continue_labels:
+                raise CodeGenError("continue outside loop")
+            self.emit(f"    JMP {self.continue_labels[-1]}")
+
+        elif isinstance(stmt, VariableDeclaration):
+            # Local variable - allocate in function's static space
+            var_name = stmt.name
+            size = self.get_type_size(stmt.type)
+            self.local_vars[var_name] = {"type": stmt.type, "size": size}
+
+            # Initialize if needed
+            if stmt.initializer:
+                self.generate_expression(stmt.initializer, "A")
+                self.emit(f"    STORE_A _{self.current_function}_{var_name}")
+
+        else:
+            raise CodeGenError(f"Unsupported statement: {type(stmt)}")
+
+    # Top-level generation
+    def generate_global_var(self, decl: VariableDeclaration) -> None:
+        """Generate global variable."""
+        size = self.get_type_size(decl.type)
+        self.globals[decl.name] = {"type": decl.type, "size": size}
+
+    def generate_function(self, func: FunctionDeclaration) -> None:
+        """Generate function code."""
+        self.current_function = func.name
+        self.local_vars = {}
+
+        # Register function parameters as local variables
+        # Parameters are passed in registers, so they're implicitly available
+        for param in func.parameters:
+            size = self.get_type_size(param.type)
+            self.local_vars[param.name] = {"type": param.type, "size": size, "is_param": True}
+
+        # Function label
+        self.emit("")
+        self.emit_comment(f"Function: {func.name}")
+        self.emit(f"_{func.name}:")
+
+        # Save parameters to static storage
+        # For Phase 1: First param in A (char) or AB (int), second param in B (char) or CD (int)
+        if len(func.parameters) >= 1:
+            param = func.parameters[0]
+            if self.is_char_type(param.type):
+                self.emit(f"    STORE_A _{func.name}_{param.name}")
+            else:
+                # Save 16-bit parameter via EF pointer
+                self.emit(f"    SET_EF #_{func.name}_{param.name}")
+                self.emit(f"    STORE_A_EF")
+                self.emit("    EF++")
+                self.emit(f"    STORE_B_EF")
+
+        if len(func.parameters) >= 2:
+            param = func.parameters[1]
+            if self.is_char_type(param.type):
+                self.emit(f"    STORE_B _{func.name}_{param.name}")
+            else:
+                # Save CD to parameter location via EF pointer
+                self.emit(f"    CD>AB")  # Move CD to AB
+                self.emit(f"    SET_EF #_{func.name}_{param.name}")
+                self.emit(f"    STORE_A_EF")
+                self.emit("    EF++")
+                self.emit(f"    STORE_B_EF")
+
+        # Generate body
+        if func.body:
+            for stmt in func.body.statements:
+                self.generate_statement(stmt)
+
+            # Add implicit return if needed
+            self.emit("    RETURN")
+
+        # Save local vars for data section
+        if self.local_vars:
+            self.all_local_vars[func.name] = self.local_vars.copy()
+
+    def generate_data_section(self) -> None:
+        """Generate data section with variables."""
+        self.emit("")
+        self.emit_comment("Global variables")
+
+        for name, info in self.globals.items():
+            if info["size"] == 1:
+                self.emit(f"_{name}:")
+                self.emit("    .BYTE 0")
+            else:
+                self.emit(f"_{name}:")
+                self.emit("    .WORD 0")
+
+        # String literals
+        if self.string_literals:
+            self.emit("")
+            self.emit_comment("String literals")
+            for label, value in self.string_literals:
+                # Convert escape sequences
+                value = value.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+                self.emit(f"{label}:")
+                self.emit(f'    .ASCIIZ "{value}"')
+
+        # Local variables (static storage)
+        if self.all_local_vars:
+            self.emit("")
+            self.emit_comment("Static local variables")
+            for func_name, local_vars in self.all_local_vars.items():
+                for var_name, info in local_vars.items():
+                    if info["size"] == 1:
+                        self.emit(f"_{func_name}_{var_name}:")
+                        self.emit("    .BYTE 0")
+                    else:
+                        self.emit(f"_{func_name}_{var_name}:")
+                        self.emit("    .WORD 0")
+
+    def generate(self, program: Program) -> str:
+        """Generate assembly code from AST."""
+        self.emit("; Generated by SK02-C compiler")
+        self.emit(".ORG $8000")
+        self.emit("")
+
+        # First pass: collect global variables
+        for decl in program.declarations:
+            if isinstance(decl, VariableDeclaration):
+                self.generate_global_var(decl)
+
+        # Generate functions
+        for decl in program.declarations:
+            if isinstance(decl, FunctionDeclaration):
+                self.generate_function(decl)
+
+        # Generate data section
+        self.generate_data_section()
+
+        return "\n".join(self.output)

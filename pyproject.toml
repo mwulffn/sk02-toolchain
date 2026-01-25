@@ -1,0 +1,30 @@
+[project]
+name = "sk02"
+version = "0.1.0"
+description = "SK-02 8-bit Computer Assembler and C Compiler"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+sk02-asm = "sk02_asm.cli:main"
+sk02cc = "sk02cc.cli:main"
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sk02_asm", "src/sk02cc"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.14",
+]
