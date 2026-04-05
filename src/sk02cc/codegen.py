@@ -131,10 +131,15 @@ class CodeGenerator:
 
     def generate_binary_op(self, expr: BinaryOp) -> None:
         """Generate code for binary operation."""
-        # Simple implementation: left in A, right in B
+        # Evaluate left into A, save it, evaluate right into A, move to B, restore left.
+        # NumberLiteral and CharLiteral honour result_reg="B" and emit SET_B directly.
+        # All other expression types ignore result_reg and always produce result in A,
+        # so we emit A>B afterwards to move the RHS into B before POP_A restores the LHS.
         self.generate_expression(expr.left, "A")
         self.emit("    PUSH_A")
         self.generate_expression(expr.right, "B")
+        if not isinstance(expr.right, (NumberLiteral, CharLiteral)):
+            self.emit("    A>B")
         self.emit("    POP_A")
 
         if expr.op == "+":
@@ -191,45 +196,56 @@ class CodeGenerator:
         """Generate comparison code.
 
         CMP sets flags without modifying A:
-        - overflow=true, zero=true:  A == B
-        - overflow=true, zero=false: A > B
-        - overflow=false:            A < B
+          overflow = (A - B) < 0  →  overflow is SET when A < B (unsigned)
+          zero     = (A - B) == 0 →  zero is SET when A == B
+
+        Derived conditions:
+          A <  B  →  overflow set,   zero clear
+          A == B  →  overflow clear, zero set
+          A >  B  →  overflow clear, zero clear
+          A >= B  →  overflow clear  (zero may or may not be set)
+          A <= B  →  overflow set OR zero set
         """
-        self.emit("    CMP")  # Sets overflow and zero flags, A unchanged
+        self.emit("    CMP")
+        false_label = self.new_label("false")
         true_label = self.new_label("true")
         end_label = self.new_label("cmp_end")
 
         if op == "==":
+            # true when zero set
             self.emit(f"    JMP_ZERO {true_label}")
+            self.emit(f"    JMP {false_label}")
         elif op == "!=":
-            self.emit(f"    JMP_ZERO {end_label}")
+            # true when zero clear
+            self.emit(f"    JMP_ZERO {false_label}")
             self.emit(f"    JMP {true_label}")
         elif op == "<":
-            # A < B: overflow not set
-            self.emit(f"    JMP_OVER {end_label}")  # A >= B, false
+            # true when overflow set (A < B)
+            self.emit(f"    JMP_OVER {true_label}")
+            self.emit(f"    JMP {false_label}")
+        elif op == ">=":
+            # true when overflow clear (A >= B)
+            self.emit(f"    JMP_OVER {false_label}")
             self.emit(f"    JMP {true_label}")
         elif op == ">":
-            # A > B: overflow set and zero not set
-            self.emit(f"    JMP_ZERO {end_label}")  # A == B, false
-            self.emit(f"    JMP_OVER {true_label}")  # A >= B (and not equal), true
+            # true when overflow clear AND zero clear (A > B)
+            self.emit(f"    JMP_OVER {false_label}")  # A < B → false
+            self.emit(f"    JMP_ZERO {false_label}")  # A == B → false
+            self.emit(f"    JMP {true_label}")
         elif op == "<=":
-            # A <= B: zero set or overflow not set
-            self.emit(f"    JMP_ZERO {true_label}")  # A == B, true
-            self.emit(f"    JMP_OVER {end_label}")  # A > B, false
-            self.emit(f"    JMP {true_label}")  # A < B, true
-        elif op == ">=":
-            # A >= B: overflow set
-            self.emit(f"    JMP_OVER {true_label}")
+            # true when overflow set (A < B) OR zero set (A == B)
+            self.emit(f"    JMP_OVER {true_label}")   # A < B → true
+            self.emit(f"    JMP_ZERO {true_label}")   # A == B → true
+            self.emit(f"    JMP {false_label}")
         else:
             raise CodeGenError(f"Unknown comparison operator: {op}")
 
-        # False case
-        self.emit("    SET_A #0")
-        self.emit(f"    JMP {end_label}")
-
-        # True case
         self.emit(f"{true_label}:")
         self.emit("    SET_A #1")
+        self.emit(f"    JMP {end_label}")
+
+        self.emit(f"{false_label}:")
+        self.emit("    SET_A #0")
 
         self.emit(f"{end_label}:")
 
@@ -369,32 +385,100 @@ class CodeGenerator:
 
     def generate_assignment(self, expr: Assignment) -> None:
         """Generate assignment code."""
-        # Generate value
+        if not isinstance(expr.target, Identifier):
+            raise CodeGenError("Complex lvalues not yet supported")
+
+        var_name = expr.target.name
+
+        # Resolve variable info
+        if var_name in self.local_vars:
+            var_info = self.local_vars[var_name]
+            label = f"_{self.current_function}_{var_name}"
+        elif var_name in self.globals:
+            var_info = self.globals[var_name]
+            label = f"_{var_name}"
+        else:
+            raise CodeGenError(f"Undefined variable: {var_name}")
+
+        is_16bit = var_info["size"] == 2
+
+        # For compound assignments, load the current value first
+        if expr.op != "=":
+            if is_16bit:
+                self.emit(f"    SET_CD #{label}")
+                self.emit(f"    LO_AB_CD")
+            else:
+                self.emit(f"    LOAD_A {label}")
+            self.emit("    PUSH_A")
+            if is_16bit:
+                self.emit("    PUSH_B")
+
+        # Evaluate RHS into A (or AB for 16-bit)
         self.generate_expression(expr.value, "A")
 
-        # Store to target
-        if isinstance(expr.target, Identifier):
-            var_name = expr.target.name
-            if var_name in self.local_vars:
-                var_info = self.local_vars[var_name]
-                if var_info["size"] == 1:
-                    self.emit(f"    STORE_A _{self.current_function}_{var_name}")
+        # Apply compound operator
+        if expr.op != "=":
+            if is_16bit:
+                # 16-bit compound: RHS in AB, LHS on stack
+                self.emit("    AB>CD")   # move RHS to CD
+                self.emit("    POP_B")   # restore LHS high byte
+                self.emit("    POP_A")   # restore LHS low byte
+                op_map = {
+                    "+=": "AB+CD",
+                    "-=": "AB-CD",
+                }
+                if expr.op in op_map:
+                    self.emit(f"    {op_map[expr.op]}")
                 else:
-                    # Store 16-bit value via CD pointer (value in AB)
-                    self.emit(f"    SET_CD #_{self.current_function}_{var_name}")
-                    self.emit(f"    ST_AB_CD")
-            elif var_name in self.globals:
-                var_info = self.globals[var_name]
-                if var_info["size"] == 1:
-                    self.emit(f"    STORE_A _{var_name}")
-                else:
-                    # Store 16-bit value via CD pointer
-                    self.emit(f"    SET_CD #_{var_name}")
-                    self.emit(f"    ST_AB_CD")
+                    raise CodeGenError(
+                        f"Unsupported compound operator for int: {expr.op}"
+                    )
             else:
-                raise CodeGenError(f"Undefined variable: {var_name}")
+                # 8-bit compound: RHS in A, LHS on stack
+                self.emit("    A>B")    # move RHS to B
+                self.emit("    POP_A")  # restore LHS
+                op_map = {
+                    "+=": "ADD",
+                    "-=": "SUB",
+                    "&=": "AND",
+                    "|=": "OR",
+                    "^=": "XOR",
+                }
+                if expr.op in op_map:
+                    self.emit(f"    {op_map[expr.op]}")
+                elif expr.op in ("<<=", ">>="):
+                    # Shift: value in A, count in B
+                    self.emit("    A>B")   # count (RHS) already in B... wait
+                    # Actually after A>B: B=RHS, A=LHS (from POP_A)
+                    # We need shift count in B and value in A — that's correct
+                    shift_op = "A<<" if expr.op == "<<=" else "A>>"
+                    # Generate a shift loop (reuse binary op shift logic)
+                    loop_label = self.new_label("shift_left" if expr.op == "<<=" else "shift_right")
+                    end_label = self.new_label("shift_end")
+                    self.emit("    PUSH_A")
+                    self.emit(f"{loop_label}:")
+                    self.emit("    B>A")
+                    self.emit("    A_ZERO")
+                    self.emit(f"    JMP_ZERO {end_label}")
+                    self.emit("    A>B")
+                    self.emit("    POP_A")
+                    self.emit(f"    {shift_op}")
+                    self.emit("    PUSH_A")
+                    self.emit("    B--")
+                    self.emit(f"    JMP {loop_label}")
+                    self.emit(f"{end_label}:")
+                    self.emit("    POP_A")
+                else:
+                    raise CodeGenError(
+                        f"Unsupported compound operator: {expr.op}"
+                    )
+
+        # Store result
+        if is_16bit:
+            self.emit(f"    SET_CD #{label}")
+            self.emit(f"    ST_AB_CD")
         else:
-            raise CodeGenError("Complex lvalues not yet supported")
+            self.emit(f"    STORE_A {label}")
 
     def generate_function_call(self, expr: FunctionCall) -> None:
         """Generate function call code."""
@@ -518,8 +602,14 @@ class CodeGenerator:
 
             # Initialize if needed
             if stmt.initializer:
-                self.generate_expression(stmt.initializer, "A")
-                self.emit(f"    STORE_A _{self.current_function}_{var_name}")
+                label = f"_{self.current_function}_{var_name}"
+                if size == 1:
+                    self.generate_expression(stmt.initializer, "A")
+                    self.emit(f"    STORE_A {label}")
+                else:
+                    self.generate_expression(stmt.initializer, "AB")
+                    self.emit(f"    SET_CD #{label}")
+                    self.emit(f"    ST_AB_CD")
 
         else:
             raise CodeGenError(f"Unsupported statement: {type(stmt)}")
