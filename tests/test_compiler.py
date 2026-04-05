@@ -789,3 +789,126 @@ class TestShifts:
             }
         """, A=5)
         assert cpu.A == 40, f"5 << 3 should be 40, got {cpu.A}"
+
+
+# ===========================================================================
+# Tier 2: Logical && and || with short-circuit evaluation
+#
+# The lexer and parser already handle these; codegen raises CodeGenError.
+# Result must always be 0 or 1 (C semantics). Right operand must not be
+# evaluated when left operand already determines the result.
+# ===========================================================================
+
+
+class TestLogicalOperators:
+    """&& and || must short-circuit and return 0 or 1."""
+
+    # --- && ---
+
+    def test_and_true_true(self):
+        """1 && 1 must return 1."""
+        cpu = run_c("char main() { if (1 && 1) return 1; return 0; }")
+        assert cpu.A == 1, f"1 && 1 should be 1, got {cpu.A}"
+
+    def test_and_true_false(self):
+        """1 && 0 must return 0."""
+        cpu = run_c("char main() { if (1 && 0) return 1; return 0; }")
+        assert cpu.A == 0, f"1 && 0 should be 0, got {cpu.A}"
+
+    def test_and_false_short_circuits(self):
+        """0 && 1 must return 0 (left is false, right must be skipped)."""
+        cpu = run_c("char main() { if (0 && 1) return 1; return 0; }")
+        assert cpu.A == 0, f"0 && 1 should be 0, got {cpu.A}"
+
+    def test_and_normalizes_to_0_or_1(self):
+        """5 && 10 must return 1, not 10."""
+        cpu = run_c("char main() { return 5 && 10; }")
+        assert cpu.A == 1, f"5 && 10 should be 1, got {cpu.A}"
+
+    # --- || ---
+
+    def test_or_false_false(self):
+        """0 || 0 must return 0."""
+        cpu = run_c("char main() { if (0 || 0) return 1; return 0; }")
+        assert cpu.A == 0, f"0 || 0 should be 0, got {cpu.A}"
+
+    def test_or_false_true(self):
+        """0 || 1 must return 1 (right determines result)."""
+        cpu = run_c("char main() { if (0 || 1) return 1; return 0; }")
+        assert cpu.A == 1, f"0 || 1 should be 1, got {cpu.A}"
+
+    def test_or_true_short_circuits(self):
+        """1 || 0 must return 1 (left is true, right must be skipped)."""
+        cpu = run_c("char main() { if (1 || 0) return 1; return 0; }")
+        assert cpu.A == 1, f"1 || 0 should be 1, got {cpu.A}"
+
+    # --- with expression operands ---
+
+    def test_and_with_comparisons(self):
+        """(a > 0) && (b > 0) must return 1 when both positive."""
+        cpu = run_c("""
+            char main(char a, char b) {
+                if (a > 0 && b > 0) return 1;
+                return 0;
+            }
+        """, A=5, B=3)
+        assert cpu.A == 1, f"5>0 && 3>0 should be 1, got {cpu.A}"
+
+    def test_or_with_comparisons(self):
+        """(a == 0) || (b == 0) must return 1 when one is zero."""
+        cpu = run_c("""
+            char main(char a, char b) {
+                if (a == 0 || b == 0) return 1;
+                return 0;
+            }
+        """, A=0, B=5)
+        assert cpu.A == 1, f"0==0 || 5==0 should be 1, got {cpu.A}"
+
+    def test_and_short_circuit_skips_rhs(self):
+        """0 && side_effect(): global must remain 0 (RHS not evaluated)."""
+        cpu = run_c("""
+            char g;
+            char main() {
+                g = 0;
+                if (0 && bump()) return 1;
+                return g;
+            }
+            char bump() { g = 99; return 1; }
+        """)
+        assert cpu.A == 0, f"RHS of 0 && bump() must not run; g should stay 0, got {cpu.A}"
+
+    def test_mixed_precedence(self):
+        """a || b && c: && binds tighter, so a || (b && c)."""
+        # a=0, b=1, c=1: 0 || (1 && 1) = 0 || 1 = 1
+        # If || bound tighter: (0 || 1) && 1 = 1 && 1 = 1 -- same result
+        # Use a=0, b=0, c=1: 0 || (0 && 1) = 0 || 0 = 0
+        # If || bound tighter: (0 || 0) && 1 = 0 && 1 = 0 -- same again
+        # Use a=1, b=0, c=0: 1 || (0 && 0) = 1 || 0 = 1
+        # If && bound tighter (wrong): 1 || (0 && 0) = 1 -- can't distinguish
+        # Best distinguishing case: a=0, b=1, c=0
+        # Correct (&&-tighter): 0 || (1 && 0) = 0 || 0 = 0
+        # Wrong (||-tighter):   (0 || 1) && 0 = 1 && 0 = 0 -- same!
+        # Use: a=1, b=0, c=0 with the expression: a && b || c
+        # Correct (&&-tighter): (1 && 0) || 0 = 0 || 0 = 0
+        # Wrong (||-tighter):   1 && (0 || 0) = 1 && 0 = 0 -- same
+        # Use: a=0, b=1, c=1 with a && b || c
+        # Correct: (0 && 1) || 1 = 0 || 1 = 1
+        # Wrong:    0 && (1 || 1) = 0 && 1 = 0  <-- distinguishable!
+        cpu = run_c("""
+            char main(char a, char b, char c) {
+                if (a && b || c) return 1;
+                return 0;
+            }
+        """, A=0, B=1)
+        # c is passed via stack (not yet supported); use only a and b
+        # Rewrite: a=0, b=1 → (0 && 1) || 0 isn't testable without c
+        # Simplify: just test a && b || 1 with a=0, b=1
+        # (0 && 1) || 1 = 0 || 1 = 1 (correct &&-tighter)
+        # 0 && (1 || 1) = 0 && 1  = 0 (wrong ||-tighter)
+        cpu = run_c("""
+            char main(char a, char b) {
+                if (a && b || 1) return 1;
+                return 0;
+            }
+        """, A=0, B=1)
+        assert cpu.A == 1, f"(0&&1)||1 should be 1, got {cpu.A}"

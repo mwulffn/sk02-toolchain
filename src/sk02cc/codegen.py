@@ -138,6 +138,12 @@ class CodeGenerator:
 
     def generate_binary_op(self, expr: BinaryOp) -> None:
         """Generate code for binary operation."""
+        # && and || require short-circuit evaluation — handle before the
+        # eager evaluate-both-sides pattern below.
+        if expr.op in ("&&", "||"):
+            self.generate_logical_op(expr)
+            return
+
         # Evaluate left into A, save it, evaluate right into A, move to B, restore left.
         # NumberLiteral and CharLiteral honour result_reg="B" and emit SET_B directly.
         # All other expression types ignore result_reg and always produce result in A,
@@ -208,6 +214,47 @@ class CodeGenerator:
                 self.generate_comparison(expr.op)
         else:
             raise CodeGenError(f"Unsupported binary operator: {expr.op}")
+
+    def generate_logical_op(self, expr: BinaryOp) -> None:
+        """Generate short-circuit code for && and ||.
+
+        Result is always 0 or 1 (C boolean semantics).
+
+        &&: evaluate left; if zero → result 0 (skip right).
+            evaluate right; if zero → result 0. Otherwise result 1.
+
+        ||: evaluate left; if non-zero → result 1 (skip right).
+            evaluate right; if non-zero → result 1. Otherwise result 0.
+        """
+        end_label = self.new_label("log_end")
+
+        if expr.op == "&&":
+            false_label = self.new_label("log_false")
+            self.generate_expression(expr.left, "A")
+            self.emit("    A_ZERO")
+            self.emit(f"    JMP_ZERO {false_label}")
+            self.generate_expression(expr.right, "A")
+            self.emit("    A_ZERO")
+            self.emit(f"    JMP_ZERO {false_label}")
+            self.emit("    SET_A #1")
+            self.emit(f"    JMP {end_label}")
+            self.emit(f"{false_label}:")
+            self.emit("    SET_A #0")
+        else:  # ||
+            true_label = self.new_label("log_true")
+            try_right = self.new_label("log_try_right")
+            self.generate_expression(expr.left, "A")
+            self.emit("    A_ZERO")
+            self.emit(f"    JMP_ZERO {try_right}")
+            self.emit(f"    JMP {true_label}")
+            self.emit(f"{try_right}:")
+            self.generate_expression(expr.right, "A")
+            self.emit("    A_ZERO")
+            self.emit(f"    JMP_ZERO {end_label}")   # A is already 0 → fall to end
+            self.emit(f"{true_label}:")
+            self.emit("    SET_A #1")
+
+        self.emit(f"{end_label}:")
 
     def generate_comparison(self, op: str) -> None:
         """Generate comparison code.
