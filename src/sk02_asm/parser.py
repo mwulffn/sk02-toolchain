@@ -1,9 +1,7 @@
 """Parser for assembly source lines."""
 
 from dataclasses import dataclass
-from typing import Any
 
-from .errors import SyntaxError
 from .lexer import Lexer, Token, TokenType
 
 
@@ -15,7 +13,7 @@ class SourceLine:
     label: str | None = None
     directive: str | None = None
     mnemonic: str | None = None
-    operands: list[Any] = None
+    operands: list[Token] = None
     comment: str | None = None
     original: str = ""
 
@@ -79,34 +77,6 @@ class Parser:
             self.parsed_lines.append(current_line)
 
         return self.parsed_lines
-
-    def parse_operand(self, tokens: list[Token]) -> tuple[int, bool]:
-        """
-        Parse operand tokens into a value and immediate flag.
-        Returns (value, is_immediate).
-        """
-        if not tokens:
-            raise SyntaxError("Missing operand")
-
-        is_immediate = False
-        token_idx = 0
-
-        # Check for immediate prefix
-        if tokens[0].type == TokenType.IMMEDIATE:
-            is_immediate = True
-            token_idx = 1
-            if len(tokens) <= token_idx:
-                raise SyntaxError("Missing value after #")
-
-        token = tokens[token_idx]
-
-        if token.type in (TokenType.NUMBER, TokenType.CHAR):
-            return int(token.value), is_immediate
-        elif token.type == TokenType.IDENTIFIER:
-            # Will be resolved in second pass
-            return token.value, is_immediate
-        else:
-            raise SyntaxError(f"Invalid operand: {token.value}")
 
 
 def parse_source(source: str) -> list[SourceLine]:

@@ -130,7 +130,7 @@ class Assembler:
             self.symbols.define(name, value, line.line_num)
         else:
             # Other directives affect address
-            size = Directive.get_size(directive, line.operands, self.symbols)
+            size = Directive.get_size(directive, line.operands)
             self.current_address += size
 
     def _process_directive_pass2(self, line: SourceLine, output: BinaryWriter):
@@ -147,14 +147,13 @@ class Assembler:
             output.write_bytes(self.current_address, bytes_out)
             self.current_address += len(bytes_out)
         elif directive == ".WORD":
-            bytes_out = Directive.process_word(line.operands, self.symbols)
-            # Resolve any label references
+            # process_word emits [0, 0] placeholders for identifiers; resolve them here.
+            bytes_out = Directive.process_word(line.operands)
             i = 0
             for token in line.operands:
                 if token.type == TokenType.COMMA:
                     continue
                 if token.type == TokenType.IDENTIFIER:
-                    # Resolve label
                     value = self.symbols.lookup(token.value)
                     bytes_out[i] = value & 0xFF
                     bytes_out[i + 1] = (value >> 8) & 0xFF
@@ -208,30 +207,16 @@ class Assembler:
                 )
             output.write_byte(addr, value)
             addr += 1
-        elif opcode.operand == OperandType.IMM16:
-            # 16-bit immediate (little-endian)
+        elif opcode.operand in (OperandType.IMM16, OperandType.ADDR16):
+            # 16-bit operand (immediate or address), little-endian
             if not line.operands:
                 raise InvalidOperandError(
-                    f"{line.mnemonic} requires a 16-bit immediate value", line.line_num
+                    f"{line.mnemonic} requires a 16-bit operand", line.line_num
                 )
             value = self._resolve_operand(line.operands[0])
             if value < 0 or value > 0xFFFF:
                 raise InvalidOperandError(
-                    f"16-bit immediate value out of range: ${value:04X}", line.line_num
-                )
-            output.write_byte(addr, value & 0xFF)  # Low byte
-            output.write_byte(addr + 1, (value >> 8) & 0xFF)  # High byte
-            addr += 2
-        elif opcode.operand == OperandType.ADDR16:
-            # 16-bit address (little-endian)
-            if not line.operands:
-                raise InvalidOperandError(
-                    f"{line.mnemonic} requires a 16-bit address", line.line_num
-                )
-            value = self._resolve_operand(line.operands[0])
-            if value < 0 or value > 0xFFFF:
-                raise InvalidOperandError(
-                    f"Address out of range: ${value:04X}", line.line_num
+                    f"16-bit operand out of range: ${value:04X}", line.line_num
                 )
             output.write_byte(addr, value & 0xFF)  # Low byte
             output.write_byte(addr + 1, (value >> 8) & 0xFF)  # High byte
@@ -288,7 +273,7 @@ def assemble_file(
     # Write output
     if format == "hex":
         hex_output = IntelHexWriter()
-        for addr, byte in output.data.items():
+        for addr, byte in sorted(output.data.items()):
             hex_output.write_byte(addr, byte)
         hex_output.save(output_path)
     else:

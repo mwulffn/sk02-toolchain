@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .assembler import Assembler, assemble_file
+from .assembler import Assembler
 
 
 def main():
@@ -91,7 +91,7 @@ Examples:
     # Build include paths
     include_paths = [Path(p) for p in args.include]
 
-    # Assemble
+    # Assemble once — reuse the output for both binary/hex and listing.
     if args.verbose:
         print(f"Assembling {args.input}...")
         print(f"Origin: ${start_address:04X}")
@@ -99,23 +99,46 @@ Examples:
         if include_paths:
             print(f"Include paths: {', '.join(str(p) for p in include_paths)}")
 
-    success = assemble_file(
-        args.input, args.output, args.format, start_address, include_paths
-    )
+    with open(input_path, "r") as f:
+        source = f.read()
+    assembler = Assembler(source, start_address, input_path, include_paths)
+    asm_output, errors = assembler.assemble()
 
-    # Generate listing if requested
-    if args.listing and success:
-        with open(input_path, "r") as f:
-            source = f.read()
-        assembler = Assembler(source, start_address, input_path, include_paths)
-        output, _ = assembler.assemble()
-        listing = output.get_listing()
+    if errors:
+        for error in errors:
+            print(f"Error: {error}")
+        sys.exit(1)
+
+    # Determine output path
+    if args.output:
+        output_path = Path(args.output)
+    elif args.format == "hex":
+        output_path = input_path.with_suffix(".hex")
+    else:
+        output_path = input_path.with_suffix(".bin")
+
+    # Write binary / hex output
+    if args.format == "hex":
+        from .output import IntelHexWriter
+        hex_output = IntelHexWriter()
+        for addr, byte in sorted(asm_output.data.items()):
+            hex_output.write_byte(addr, byte)
+        hex_output.save(output_path)
+    else:
+        asm_output.save(output_path)
+
+    if args.verbose:
+        print(f"Assembly successful: {output_path}")
+
+    # Generate listing from the same assembly pass
+    if args.listing:
+        listing = asm_output.get_listing()
         with open(args.listing, "w") as f:
             f.write(listing)
         if args.verbose:
             print(f"Listing written to {args.listing}")
 
-    sys.exit(0 if success else 1)
+    sys.exit(0)
 
 
 if __name__ == "__main__":

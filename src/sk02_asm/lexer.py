@@ -47,8 +47,14 @@ class Lexer:
             self._tokenize_line(line, line_num)
 
     def _tokenize_line(self, line: str, line_num: int):
-        """Tokenize a single line."""
-        # Remove comments
+        """Tokenize a single line.
+
+        ``col`` always tracks the column offset into the *original* ``line``
+        string so that all emitted Token.column values are accurate.
+        """
+        original = line  # keep for column calculations
+
+        # Remove comments (preserving original column reference)
         comment_pos = line.find(";")
         if comment_pos != -1:
             comment = line[comment_pos:]
@@ -58,132 +64,126 @@ class Lexer:
                     Token(TokenType.COMMENT, comment, line_num, comment_pos)
                 )
 
-        # Strip whitespace
-        line = line.strip()
-        if not line:
+        # Find first non-whitespace column so all positions are in original coords.
+        stripped = line.strip()
+        if not stripped:
             return
 
-        pos = 0
+        # col = current scan position within `original` (not the stripped copy).
+        # We work on `remaining` which is a suffix of `original` starting at col.
+        col = len(original) - len(original.lstrip())
+        remaining = original[col:comment_pos if comment_pos != -1 else len(original)].rstrip()
 
         # Check for label at start of line (global or local)
-        if line and (line[0].isalpha() or line[0] == "." or line[0] == "_"):
-            match = re.match(
-                r"^(\.[a-zA-Z_][a-zA-Z0-9_]*|[a-zA-Z_][a-zA-Z0-9_]*):", line
-            )
-            if match:
-                label = match.group(1)
-                self.tokens.append(Token(TokenType.LABEL, label, line_num, 0))
-                pos = match.end()
-                line = line[pos:].strip()
-                pos = 0
+        match = re.match(
+            r"^(\.[a-zA-Z_][a-zA-Z0-9_]*|[a-zA-Z_][a-zA-Z0-9_]*):", remaining
+        )
+        if match:
+            self.tokens.append(Token(TokenType.LABEL, match.group(1), line_num, col))
+            col += match.end()
+            remaining = remaining[match.end():]
+            ws = len(remaining) - len(remaining.lstrip())
+            col += ws
+            remaining = remaining[ws:]
 
         # Check for directive
         has_directive = False
-        if line.startswith("."):
-            match = re.match(r"^(\.[A-Z]+)", line, re.IGNORECASE)
-            if match:
-                directive = match.group(1).upper()
-                self.tokens.append(Token(TokenType.DIRECTIVE, directive, line_num, pos))
-                has_directive = True
-                pos = match.end()
-                line = line[pos:].strip()
-                pos = 0
+        match = re.match(r"^(\.[A-Z]+)", remaining, re.IGNORECASE)
+        if match:
+            self.tokens.append(Token(TokenType.DIRECTIVE, match.group(1).upper(), line_num, col))
+            has_directive = True
+            col += match.end()
+            after = remaining[match.end():]
+            col += len(after) - len(after.lstrip())
+            remaining = after.lstrip()
 
         # Check for mnemonic (only if no directive on this line)
-        if line and not has_directive:
-            match = re.match(r"^([A-Z0-9_][A-Z0-9_>+\-<]*)", line, re.IGNORECASE)
+        if remaining and not has_directive:
+            match = re.match(r"^([A-Z0-9_][A-Z0-9_>+\-<]*)", remaining, re.IGNORECASE)
             if match:
-                mnemonic = match.group(1).upper()
-                self.tokens.append(Token(TokenType.MNEMONIC, mnemonic, line_num, pos))
-                pos = match.end()
-                line = line[pos:].strip()
-                pos = 0
+                self.tokens.append(Token(TokenType.MNEMONIC, match.group(1).upper(), line_num, col))
+                col += match.end()
+                after = remaining[match.end():]
+                col += len(after) - len(after.lstrip())
+                remaining = after.lstrip()
 
         # Process operands
-        while line:
-            # Skip whitespace
-            match = re.match(r"^\s+", line)
-            if match:
-                pos += match.end()
-                line = line[match.end() :]
+        while remaining:
+            # Skip leading whitespace (already stripped above; handle mid-operand spaces)
+            ws = re.match(r"^\s+", remaining)
+            if ws:
+                col += ws.end()
+                remaining = remaining[ws.end():]
                 continue
 
             # Immediate value (#)
-            if line.startswith("#"):
-                self.tokens.append(Token(TokenType.IMMEDIATE, "#", line_num, pos))
-                pos += 1
-                line = line[1:]
+            if remaining.startswith("#"):
+                self.tokens.append(Token(TokenType.IMMEDIATE, "#", line_num, col))
+                col += 1
+                remaining = remaining[1:]
                 continue
 
             # Hex number ($XXXX)
-            match = re.match(r"^\$([0-9A-Fa-f]+)", line)
+            match = re.match(r"^\$([0-9A-Fa-f]+)", remaining)
             if match:
                 value = int(match.group(1), 16)
-                self.tokens.append(Token(TokenType.NUMBER, str(value), line_num, pos))
-                pos += match.end()
-                line = line[match.end() :]
+                self.tokens.append(Token(TokenType.NUMBER, str(value), line_num, col))
+                col += match.end()
+                remaining = remaining[match.end():]
                 continue
 
             # Binary number (%XXXXXXXX)
-            match = re.match(r"^%([01]+)", line)
+            match = re.match(r"^%([01]+)", remaining)
             if match:
                 value = int(match.group(1), 2)
-                self.tokens.append(Token(TokenType.NUMBER, str(value), line_num, pos))
-                pos += match.end()
-                line = line[match.end() :]
+                self.tokens.append(Token(TokenType.NUMBER, str(value), line_num, col))
+                col += match.end()
+                remaining = remaining[match.end():]
                 continue
 
             # Character literal ('X')
-            match = re.match(r"^'(.)'", line)
+            match = re.match(r"^'(.)'", remaining)
             if match:
-                char = match.group(1)
-                value = ord(char)
-                self.tokens.append(Token(TokenType.CHAR, str(value), line_num, pos))
-                pos += match.end()
-                line = line[match.end() :]
+                self.tokens.append(Token(TokenType.CHAR, str(ord(match.group(1))), line_num, col))
+                col += match.end()
+                remaining = remaining[match.end():]
                 continue
 
             # Decimal number
-            match = re.match(r"^(\d+)", line)
+            match = re.match(r"^(\d+)", remaining)
             if match:
-                self.tokens.append(
-                    Token(TokenType.NUMBER, match.group(1), line_num, pos)
-                )
-                pos += match.end()
-                line = line[match.end() :]
+                self.tokens.append(Token(TokenType.NUMBER, match.group(1), line_num, col))
+                col += match.end()
+                remaining = remaining[match.end():]
                 continue
 
             # String literal
-            if line.startswith('"'):
-                match = re.match(r'^"([^"]*)"', line)
+            if remaining.startswith('"'):
+                match = re.match(r'^"([^"]*)"', remaining)
                 if match:
-                    self.tokens.append(
-                        Token(TokenType.STRING, match.group(1), line_num, pos)
-                    )
-                    pos += match.end()
-                    line = line[match.end() :]
+                    self.tokens.append(Token(TokenType.STRING, match.group(1), line_num, col))
+                    col += match.end()
+                    remaining = remaining[match.end():]
                     continue
 
             # Comma
-            if line.startswith(","):
-                self.tokens.append(Token(TokenType.COMMA, ",", line_num, pos))
-                pos += 1
-                line = line[1:].strip()
+            if remaining.startswith(","):
+                self.tokens.append(Token(TokenType.COMMA, ",", line_num, col))
+                col += 1
+                remaining = remaining[1:].lstrip()
                 continue
 
             # Identifier (label reference)
             match = re.match(
-                r"^(\.[a-zA-Z_][a-zA-Z0-9_]*|[a-zA-Z_][a-zA-Z0-9_]*)", line
+                r"^(\.[a-zA-Z_][a-zA-Z0-9_]*|[a-zA-Z_][a-zA-Z0-9_]*)", remaining
             )
             if match:
-                self.tokens.append(
-                    Token(TokenType.IDENTIFIER, match.group(1), line_num, pos)
-                )
-                pos += match.end()
-                line = line[match.end() :]
+                self.tokens.append(Token(TokenType.IDENTIFIER, match.group(1), line_num, col))
+                col += match.end()
+                remaining = remaining[match.end():]
                 continue
 
-            # Unknown character
+            # Unknown character — stop silently (existing behaviour)
             break
 
     def get_tokens(self) -> list[Token]:

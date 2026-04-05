@@ -1,5 +1,6 @@
 """Tests for the SK-02 assembler."""
 
+import builtins
 import pytest
 from pathlib import Path
 
@@ -10,11 +11,15 @@ from sk02_asm.parser import parse_source
 from sk02_asm.preprocessor import Preprocessor, PreprocessorError
 from sk02_asm.symbols import SymbolTable
 from sk02_asm.errors import (
+    AddressOutOfRangeError,
+    AsmSyntaxError,
+    AssemblyError,
     DuplicateSymbolError,
     InvalidOpcodeError,
     InvalidOperandError,
     UndefinedSymbolError,
 )
+from sk02_asm.output import BinaryWriter, IntelHexWriter
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +504,23 @@ class TestLexer:
         assert len(mnemonics) == 1
         assert mnemonics[0].value == "NOP"
 
+    def test_operand_column_is_in_original_line_coords(self):
+        """Operand token columns must be relative to the original line, not a
+        sliced remainder.  Previously, all operand columns were reset to 0
+        after the label/mnemonic was stripped."""
+        # "start:    SET_A #42"
+        # Label 'start' is at col 0; mnemonic 'SET_A' is at col 10; operand '#42' at col 16.
+        lexer = Lexer("start:    SET_A #42")
+        tokens = {t.type: t for t in lexer.get_tokens()}
+        assert tokens[TokenType.LABEL].column == 0
+        assert tokens[TokenType.MNEMONIC].column == 10
+        # The NUMBER token for 42 follows the '#' — it should be past col 16.
+        num_tok = next(t for t in lexer.get_tokens() if t.type == TokenType.NUMBER)
+        assert num_tok.column > 10, (
+            f"Operand column {num_tok.column} should be > 10 (mnemonic column); "
+            "column tracking was previously broken after label stripping"
+        )
+
 
 # ===========================================================================
 # Symbol table tests
@@ -863,3 +885,72 @@ class TestErrors:
     def test_comment_only(self):
         result = asm("; just a comment")
         assert result == []
+
+    def test_asm_syntax_error_is_assembly_error_not_builtin(self):
+        """AsmSyntaxError must not be caught by bare 'except SyntaxError' (builtin)."""
+        from sk02_asm.errors import AsmSyntaxError, AssemblyError
+        err = AsmSyntaxError("bad syntax", line_num=1)
+        assert isinstance(err, AssemblyError)
+        # Must NOT be the Python builtin SyntaxError
+        assert not isinstance(err, builtins.SyntaxError)
+
+    def test_bad_org_directive_raises_asm_syntax_error(self):
+        """A bad .ORG raises AsmSyntaxError (not Python builtin SyntaxError)."""
+        errors = asm_errors("    .ORG")
+        assert len(errors) > 0
+        assert isinstance(errors[0], AssemblyError)
+
+
+# ---------------------------------------------------------------------------
+# Output writer tests
+# ---------------------------------------------------------------------------
+
+
+class TestOutputWriters:
+    """BinaryWriter and IntelHexWriter share validation logic via base class."""
+
+    def test_binary_writer_write_and_read(self):
+        w = BinaryWriter()
+        w.write_byte(0x8000, 0xAB)
+        assert w.data[0x8000] == 0xAB
+        assert w.min_address == 0x8000
+        assert w.max_address == 0x8000
+
+    def test_binary_writer_tracks_extents(self):
+        w = BinaryWriter()
+        w.write_byte(0x8005, 0x01)
+        w.write_byte(0x8000, 0x02)
+        assert w.min_address == 0x8000
+        assert w.max_address == 0x8005
+
+    def test_binary_writer_address_out_of_range(self):
+        w = BinaryWriter()
+        with pytest.raises(AddressOutOfRangeError):
+            w.write_byte(0x10000, 0x00)
+
+    def test_binary_writer_value_out_of_range(self):
+        w = BinaryWriter()
+        with pytest.raises(InvalidOperandError):
+            w.write_byte(0x8000, 0x100)
+
+    def test_intel_hex_writer_write_and_read(self):
+        w = IntelHexWriter()
+        w.write_byte(0x8000, 0xCD)
+        assert w.data[0x8000] == 0xCD
+
+    def test_intel_hex_writer_address_out_of_range(self):
+        w = IntelHexWriter()
+        with pytest.raises(AddressOutOfRangeError):
+            w.write_byte(0x10000, 0x00)
+
+    def test_intel_hex_writer_value_out_of_range(self):
+        w = IntelHexWriter()
+        with pytest.raises(InvalidOperandError):
+            w.write_byte(0x8000, 256)
+
+    def test_write_bytes_delegates_to_write_byte(self):
+        w = BinaryWriter()
+        w.write_bytes(0x8000, [0x01, 0x02, 0x03])
+        assert w.data[0x8000] == 0x01
+        assert w.data[0x8001] == 0x02
+        assert w.data[0x8002] == 0x03

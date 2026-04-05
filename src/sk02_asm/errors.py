@@ -22,10 +22,14 @@ class AssemblyError(Exception):
         return self.message
 
 
-class SyntaxError(AssemblyError):
+class AsmSyntaxError(AssemblyError):
     """Syntax error in assembly source."""
 
     pass
+
+
+# Backwards-compatible alias — do not use in new code.
+SyntaxError = AsmSyntaxError
 
 
 class UndefinedSymbolError(AssemblyError):

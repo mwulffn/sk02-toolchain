@@ -2,31 +2,46 @@
 
 from pathlib import Path
 
+from .errors import AddressOutOfRangeError, InvalidOperandError
 
-class BinaryWriter:
-    """Write raw binary output."""
 
-    def __init__(self, start_address: int = 0x8000):
-        self.start_address = start_address
+class _OutputWriterBase:
+    """Shared write interface for binary output writers.
+
+    Subclasses implement ``save()`` for their specific format.
+    """
+
+    def __init__(self):
         self.data: dict[int, int] = {}
-        self.min_address = 0xFFFF
-        self.max_address = 0
 
-    def write_byte(self, address: int, value: int):
-        """Write a single byte at the given address."""
+    def write_byte(self, address: int, value: int) -> None:
+        """Write a single byte, validating address and value ranges."""
         if address < 0 or address > 0xFFFF:
-            raise ValueError(f"Address out of range: ${address:04X}")
+            raise AddressOutOfRangeError(f"Address out of range: ${address:04X}")
         if value < 0 or value > 0xFF:
-            raise ValueError(f"Byte value out of range: ${value:02X}")
-
+            raise InvalidOperandError(f"Byte value out of range: ${value:02X}")
         self.data[address] = value
-        self.min_address = min(self.min_address, address)
-        self.max_address = max(self.max_address, address)
 
-    def write_bytes(self, address: int, values: list[int]):
+    def write_bytes(self, address: int, values: list[int]) -> None:
         """Write multiple bytes starting at the given address."""
         for i, value in enumerate(values):
             self.write_byte(address + i, value)
+
+
+class BinaryWriter(_OutputWriterBase):
+    """Write raw binary output."""
+
+    def __init__(self, start_address: int = 0x8000):
+        super().__init__()
+        self.start_address = start_address
+        self.min_address = 0xFFFF
+        self.max_address = 0
+
+    def write_byte(self, address: int, value: int) -> None:
+        """Write a single byte and track address extents."""
+        super().write_byte(address, value)
+        self.min_address = min(self.min_address, address)
+        self.max_address = max(self.max_address, address)
 
     def save(self, filename: str | Path):
         """Save to binary file."""
@@ -67,25 +82,11 @@ class BinaryWriter:
         return "\n".join(lines)
 
 
-class IntelHexWriter:
+class IntelHexWriter(_OutputWriterBase):
     """Write Intel HEX format output."""
 
     def __init__(self):
-        self.data: dict[int, int] = {}
-
-    def write_byte(self, address: int, value: int):
-        """Write a single byte at the given address."""
-        if address < 0 or address > 0xFFFF:
-            raise ValueError(f"Address out of range: ${address:04X}")
-        if value < 0 or value > 0xFF:
-            raise ValueError(f"Byte value out of range: ${value:02X}")
-
-        self.data[address] = value
-
-    def write_bytes(self, address: int, values: list[int]):
-        """Write multiple bytes starting at the given address."""
-        for i, value in enumerate(values):
-            self.write_byte(address + i, value)
+        super().__init__()
 
     def _checksum(self, data: list[int]) -> int:
         """Calculate Intel HEX checksum."""
