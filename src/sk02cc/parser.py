@@ -60,7 +60,15 @@ class Parser:
         token = self.current_token()
 
         # Base type
-        if self.match(TokenType.CHAR, TokenType.INT, TokenType.VOID):
+        if self.match(
+            TokenType.CHAR,
+            TokenType.INT,
+            TokenType.VOID,
+            TokenType.UINT8,
+            TokenType.INT8,
+            TokenType.UINT16,
+            TokenType.INT16,
+        ):
             type_token = self.advance()
             base_type = BasicType(type_token.value, type_token.line, type_token.column)
         else:
@@ -294,7 +302,14 @@ class Parser:
 
         # Variable declaration
         elif self.match(
-            TokenType.CHAR, TokenType.INT, TokenType.STATIC, TokenType.REGISTER
+            TokenType.CHAR,
+            TokenType.INT,
+            TokenType.STATIC,
+            TokenType.REGISTER,
+            TokenType.UINT8,
+            TokenType.INT8,
+            TokenType.UINT16,
+            TokenType.INT16,
         ):
             return self.parse_variable_declaration()
 

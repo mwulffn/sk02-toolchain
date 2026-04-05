@@ -26,6 +26,10 @@ class TokenType(Enum):
     REGISTER = auto()
     STATIC = auto()
     CONST = auto()
+    UINT8 = auto()
+    INT8 = auto()
+    UINT16 = auto()
+    INT16 = auto()
 
     # Operators
     PLUS = auto()
@@ -90,6 +94,10 @@ KEYWORDS = {
     "register": TokenType.REGISTER,
     "static": TokenType.STATIC,
     "const": TokenType.CONST,
+    "uint8": TokenType.UINT8,
+    "int8": TokenType.INT8,
+    "uint16": TokenType.UINT16,
+    "int16": TokenType.INT16,
 }
 
 

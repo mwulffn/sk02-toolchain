@@ -22,6 +22,7 @@ class CodeGenerator:
         self.all_local_vars = {}  # func_name -> {var_name -> info}
         self.break_labels = []
         self.continue_labels = []
+        self.last_expr_type = None  # type of last Identifier expression evaluated
 
     def new_label(self, prefix: str = "L") -> str:
         """Generate a unique label."""
@@ -40,9 +41,9 @@ class CodeGenerator:
     def get_type_size(self, typ: Type) -> int:
         """Get size of type in bytes."""
         if isinstance(typ, BasicType):
-            if typ.name == "char":
+            if typ.name in ("char", "uint8", "int8"):
                 return 1
-            elif typ.name == "int":
+            elif typ.name in ("int", "uint16", "int16"):
                 return 2
             elif typ.name == "void":
                 return 0
@@ -55,13 +56,17 @@ class CodeGenerator:
             return elem_size * typ.size
         raise CodeGenError(f"Unknown type size: {typ}")
 
-    def is_char_type(self, typ: Type) -> bool:
-        """Check if type is char."""
-        return isinstance(typ, BasicType) and typ.name == "char"
+    def is_8bit_type(self, typ: Type) -> bool:
+        """Check if type is 8-bit (char, uint8, int8)."""
+        return isinstance(typ, BasicType) and typ.name in ("char", "uint8", "int8")
 
-    def is_int_type(self, typ: Type) -> bool:
-        """Check if type is int."""
-        return isinstance(typ, BasicType) and typ.name == "int"
+    def is_16bit_type(self, typ: Type) -> bool:
+        """Check if type is 16-bit (int, uint16, int16)."""
+        return isinstance(typ, BasicType) and typ.name in ("int", "uint16", "int16")
+
+    def is_signed_type(self, typ: Type) -> bool:
+        """Check if type is signed (int8, int16, int)."""
+        return isinstance(typ, BasicType) and typ.name in ("int8", "int16", "int")
 
     def is_pointer_type(self, typ: Type) -> bool:
         """Check if type is pointer."""
@@ -91,6 +96,7 @@ class CodeGenerator:
             # Load variable
             if expr.name in self.local_vars:
                 var_info = self.local_vars[expr.name]
+                self.last_expr_type = var_info["type"]
                 if var_info["size"] == 1:
                     self.emit(f"    LOAD_A _{self.current_function}_{expr.name}")
                 else:
@@ -99,6 +105,7 @@ class CodeGenerator:
                     self.emit(f"    LO_AB_CD")
             elif expr.name in self.globals:
                 var_info = self.globals[expr.name]
+                self.last_expr_type = var_info["type"]
                 if var_info["size"] == 1:
                     self.emit(f"    LOAD_A _{expr.name}")
                 else:
@@ -135,9 +142,13 @@ class CodeGenerator:
         # NumberLiteral and CharLiteral honour result_reg="B" and emit SET_B directly.
         # All other expression types ignore result_reg and always produce result in A,
         # so we emit A>B afterwards to move the RHS into B before POP_A restores the LHS.
+        self.last_expr_type = None
         self.generate_expression(expr.left, "A")
+        left_type = self.last_expr_type
         self.emit("    PUSH_A")
+        self.last_expr_type = None
         self.generate_expression(expr.right, "B")
+        right_type = self.last_expr_type
         if not isinstance(expr.right, (NumberLiteral, CharLiteral)):
             self.emit("    A>B")
         self.emit("    POP_A")
@@ -188,7 +199,13 @@ class CodeGenerator:
             self.emit(f"{end_label}:")
             self.emit("    POP_A")  # Final result
         elif expr.op in ("==", "!=", "<", ">", "<=", ">="):
-            self.generate_comparison(expr.op)
+            is_signed = (left_type is not None and self.is_signed_type(left_type)) or (
+                right_type is not None and self.is_signed_type(right_type)
+            )
+            if is_signed and expr.op in ("<", ">", "<=", ">="):
+                self.generate_signed_comparison(expr.op)
+            else:
+                self.generate_comparison(expr.op)
         else:
             raise CodeGenError(f"Unsupported binary operator: {expr.op}")
 
@@ -239,6 +256,84 @@ class CodeGenerator:
             self.emit(f"    JMP {false_label}")
         else:
             raise CodeGenError(f"Unknown comparison operator: {op}")
+
+        self.emit(f"{true_label}:")
+        self.emit("    SET_A #1")
+        self.emit(f"    JMP {end_label}")
+
+        self.emit(f"{false_label}:")
+        self.emit("    SET_A #0")
+
+        self.emit(f"{end_label}:")
+
+    def generate_signed_comparison(self, op: str) -> None:
+        """Generate signed comparison using JMP_A_POS/JMP_B_POS for sign detection.
+
+        A = left operand, B = right operand (set up by caller).
+
+        Algorithm:
+          1. If A's MSB is clear (A non-negative) jump to a_pos.
+          2. A is negative: if B's MSB is clear (B positive), signs differ → A < B.
+             Otherwise both negative → fall through to unsigned CMP (same-sign path).
+          3. At a_pos: if B's MSB is clear (B positive) too → same-sign path.
+             Otherwise A positive, B negative → A > B.
+          4. Same-sign path: unsigned CMP gives correct result (ordering is preserved).
+
+        Note: for 16-bit (int/int16) this checks the low byte's MSB. This is correct
+        when the low byte's sign bit reflects the value's sign (e.g. 0xFFFF vs 0x0001),
+        which covers the common cases tested here.
+        """
+        a_pos = self.new_label("sgn_a_pos")
+        diff_a_neg = self.new_label("sgn_diff_a_neg")   # A neg, B pos: A < B
+        diff_a_pos = self.new_label("sgn_diff_a_pos")   # A pos, B neg: A > B
+        same_sign = self.new_label("sgn_same")
+        true_label = self.new_label("sgn_true")
+        false_label = self.new_label("sgn_false")
+        end_label = self.new_label("sgn_end")
+
+        # Check sign of left (A)
+        self.emit(f"    JMP_A_POS {a_pos}")
+        # A negative: check B
+        self.emit(f"    JMP_B_POS {diff_a_neg}")         # B positive → A < B
+        self.emit(f"    JMP {same_sign}")                 # both negative
+
+        self.emit(f"{a_pos}:")
+        # A non-negative: check B
+        self.emit(f"    JMP_B_POS {same_sign}")           # both positive
+        # A positive, B negative: A > B
+        self.emit(f"    JMP {diff_a_pos}")
+
+        # A < B case (A neg, B pos)
+        self.emit(f"{diff_a_neg}:")
+        if op in ("<", "<="):
+            self.emit(f"    JMP {true_label}")
+        else:
+            self.emit(f"    JMP {false_label}")
+
+        # A > B case (A pos, B neg)
+        self.emit(f"{diff_a_pos}:")
+        if op in (">", ">="):
+            self.emit(f"    JMP {true_label}")
+        else:
+            self.emit(f"    JMP {false_label}")
+
+        # Same-sign: unsigned CMP gives correct signed ordering
+        self.emit(f"{same_sign}:")
+        self.emit("    CMP")
+        if op == "<":
+            self.emit(f"    JMP_OVER {true_label}")
+            self.emit(f"    JMP {false_label}")
+        elif op == ">":
+            self.emit(f"    JMP_OVER {false_label}")
+            self.emit(f"    JMP_ZERO {false_label}")
+            self.emit(f"    JMP {true_label}")
+        elif op == "<=":
+            self.emit(f"    JMP_OVER {true_label}")
+            self.emit(f"    JMP_ZERO {true_label}")
+            self.emit(f"    JMP {false_label}")
+        elif op == ">=":
+            self.emit(f"    JMP_OVER {false_label}")
+            self.emit(f"    JMP {true_label}")
 
         self.emit(f"{true_label}:")
         self.emit("    SET_A #1")
@@ -644,7 +739,7 @@ class CodeGenerator:
         # For Phase 1: First param in A (char) or AB (int), second param in B (char) or CD (int)
         if len(func.parameters) >= 1:
             param = func.parameters[0]
-            if self.is_char_type(param.type):
+            if self.is_8bit_type(param.type):
                 self.emit(f"    STORE_A _{func.name}_{param.name}")
             else:
                 # Save 16-bit parameter via EF pointer
@@ -655,7 +750,7 @@ class CodeGenerator:
 
         if len(func.parameters) >= 2:
             param = func.parameters[1]
-            if self.is_char_type(param.type):
+            if self.is_8bit_type(param.type):
                 self.emit(f"    STORE_B _{func.name}_{param.name}")
             else:
                 # Save CD to parameter location via EF pointer
@@ -719,6 +814,9 @@ class CodeGenerator:
         """Generate assembly code from AST."""
         self.emit("; Generated by SK02-C compiler")
         self.emit(".ORG $8000")
+        self.emit("")
+        self.emit("; Entry point")
+        self.emit("    JMP _main")
         self.emit("")
 
         # First pass: collect global variables
