@@ -21,6 +21,7 @@ from sk02_asm.errors import (
 # Helper
 # ---------------------------------------------------------------------------
 
+
 def asm(source: str, start_address: int = 0x8000, **kwargs) -> list[int]:
     """Assemble source and return bytes as a list. Raises on error."""
     assembler = Assembler(source, start_address, **kwargs)
@@ -44,6 +45,7 @@ def asm_errors(source: str, **kwargs) -> list:
 # ===========================================================================
 # Opcode encoding tests
 # ===========================================================================
+
 
 class TestImpliedOpcodes:
     """Test all implied (no-operand) opcodes assemble to their correct byte."""
@@ -209,6 +211,7 @@ class TestAddressOpcodes:
 # Label tests
 # ===========================================================================
 
+
 class TestLabels:
     """Test label definition and resolution."""
 
@@ -268,8 +271,14 @@ FUNC2:
         # FUNC1 at $8000: NOP(1) .loop at $8001: JMP .loop(3) -> $8001
         # FUNC2 at $8004: NOP(1) .loop at $8005: JMP .loop(3) -> $8005
         assert result == [
-            0, 34, 0x01, 0x80,  # FUNC1: NOP, JMP $8001
-            0, 34, 0x05, 0x80,  # FUNC2: NOP, JMP $8005
+            0,
+            34,
+            0x01,
+            0x80,  # FUNC1: NOP, JMP $8001
+            0,
+            34,
+            0x05,
+            0x80,  # FUNC2: NOP, JMP $8005
         ]
 
     def test_undefined_label_error(self):
@@ -307,6 +316,7 @@ EQUAL:
 # ===========================================================================
 # Directive tests
 # ===========================================================================
+
 
 class TestDirectives:
     """Test assembler directives."""
@@ -392,6 +402,7 @@ TARGET:
 # Number format tests
 # ===========================================================================
 
+
 class TestNumberFormats:
     """Test hex, decimal, binary, and char literal parsing."""
 
@@ -415,6 +426,7 @@ class TestNumberFormats:
 # ===========================================================================
 # Lexer tests
 # ===========================================================================
+
 
 class TestLexer:
     """Test the lexer/tokenizer."""
@@ -492,8 +504,8 @@ class TestLexer:
 # Symbol table tests
 # ===========================================================================
 
-class TestSymbolTable:
 
+class TestSymbolTable:
     def test_define_and_lookup(self):
         st = SymbolTable()
         st.define("FOO", 0x1234)
@@ -533,6 +545,7 @@ class TestSymbolTable:
 # Preprocessor tests
 # ===========================================================================
 
+
 class TestPreprocessor:
     """Test macro and include preprocessing."""
 
@@ -563,8 +576,14 @@ __label_\\@:
         # First expansion: __label_0 at $8000, JMP $8000
         # Second expansion: __label_1 at $8004, JMP $8004
         assert result == [
-            0, 34, 0x00, 0x80,  # NOP, JMP $8000
-            0, 34, 0x04, 0x80,  # NOP, JMP $8004
+            0,
+            34,
+            0x00,
+            0x80,  # NOP, JMP $8000
+            0,
+            34,
+            0x04,
+            0x80,  # NOP, JMP $8004
         ]
 
     def test_nested_macro(self):
@@ -603,11 +622,11 @@ __done_\\@:
         # JMP __delay_0 at $8006: [34, 0x02, 0x80]
         # __done_0 at $8009: (empty, just a label)
         # Wait — __done_0 is at $8009, so JMP_ZERO target is $8009
-        assert result[0:2] == [17, 5]       # SET_A #5
-        assert result[2] == 12              # A--
-        assert result[3] == 39              # JMP_ZERO
-        assert result[6] == 34              # JMP
-        assert result[-1] == 127            # HALT
+        assert result[0:2] == [17, 5]  # SET_A #5
+        assert result[2] == 12  # A--
+        assert result[3] == 39  # JMP_ZERO
+        assert result[6] == 34  # JMP
+        assert result[-1] == 127  # HALT
 
     def test_unterminated_macro_error(self):
         source = """\
@@ -646,9 +665,7 @@ __done_\\@:
         lib_file.write_text("    NOP\n")
 
         source = f'    .INCLUDE "lib.asm"\n    .ORG $8000\n    HALT'
-        assembler = Assembler(
-            source, include_paths=[tmp_path]
-        )
+        assembler = Assembler(source, include_paths=[tmp_path])
         output, errors = assembler.assemble()
         assert errors == [], f"Errors: {errors}"
 
@@ -703,6 +720,7 @@ __done_\\@:
 # Integration tests — complete programs
 # ===========================================================================
 
+
 class TestIntegration:
     """End-to-end assembly of complete programs."""
 
@@ -723,9 +741,9 @@ DONE:
         result = asm(source)
         # Verify structure: SET_A(2), A++(1), SET_B(2), CMP(1), JMP_ZERO(3), JMP(3), A>OUT_0(1), HALT(1)
         assert len(result) == 14
-        assert result[0] == 17   # SET_A
-        assert result[1] == 0    # #0
-        assert result[-1] == 127 # HALT
+        assert result[0] == 17  # SET_A
+        assert result[1] == 0  # #0
+        assert result[-1] == 127  # HALT
         assert result[-2] == 49  # A>OUT_0
 
     def test_multiply_6x7(self):
@@ -763,7 +781,7 @@ DATA:
         result = asm(source)
         # LOAD_A(3) + A>OUT_0(1) + HALT(1) + BYTE(1) = 6
         assert len(result) == 6
-        assert result[0] == 7    # LOAD_A opcode
+        assert result[0] == 7  # LOAD_A opcode
         # LOAD_A address should point to DATA at $8005
         assert result[1] == 0x05
         assert result[2] == 0x80
@@ -820,8 +838,8 @@ TARGET:
 # Error handling tests
 # ===========================================================================
 
-class TestErrors:
 
+class TestErrors:
     def test_unknown_opcode(self):
         errors = asm_errors("    .ORG $8000\n    BOGUS")
         assert len(errors) > 0

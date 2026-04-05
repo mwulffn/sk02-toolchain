@@ -176,7 +176,6 @@ class CPU:
             f"E=${self.E:02X} F=${self.F:02X} G=${self.G:02X} H=${self.H:02X}"
         )
         lines.append(
-            f"AB=${self.AB:04X} CD=${self.CD:04X} "
-            f"EF=${self.EF:04X} GH=${self.GH:04X}"
+            f"AB=${self.AB:04X} CD=${self.CD:04X} EF=${self.EF:04X} GH=${self.GH:04X}"
         )
         return "\n".join(lines)

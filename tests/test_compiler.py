@@ -1134,3 +1134,86 @@ class TestMultiplyDivide:
             A=13,
         )
         assert cpu.A == 3, f"13 %= 5 should be 3, got {cpu.A}"
+
+
+# ===========================================================================
+# Stack-passed function parameters (3+)
+#
+# Params 1-2 go in registers A/B (8-bit) or AB/CD (16-bit).
+# Params 3+ are pushed onto the data stack by the caller (right-to-left),
+# and popped by the callee in declaration order.
+# ===========================================================================
+
+
+class TestStackPassedParams:
+    """Function parameters beyond the first two must be passed on the data stack."""
+
+    def test_three_params_no_error(self):
+        """3 parameters must not raise CodeGenError."""
+        asm_lines("void f(char a, char b, char c) { } void main() { f(1, 2, 3); }")
+
+    def test_three_char_params_caller_pushes(self):
+        """Calling f(1,2,3) must PUSH_A for the third arg before GOSUB."""
+        lines = asm_lines("void f(char a, char b, char c); void main() { f(1, 2, 3); }")
+        gosub_idx = next(i for i, l in enumerate(lines) if "GOSUB _f" in l)
+        # At least one PUSH_A before the GOSUB (for the third param)
+        push_before = [l for l in lines[:gosub_idx] if l == "PUSH_A"]
+        assert len(push_before) >= 1, "Third param must be pushed onto data stack"
+
+    def test_three_char_params_callee_pops(self):
+        """Function with 3 char params must POP_A to receive the third."""
+        lines = asm_lines("char f(char a, char b, char c) { return c; }")
+        func_start = next(i for i, l in enumerate(lines) if l == "_f:")
+        pop_lines = [l for l in lines[func_start:] if l == "POP_A"]
+        assert len(pop_lines) >= 1, "Callee must pop third param from stack"
+
+    def test_three_char_params_returns_third(self):
+        """f(10, 20, 30) where f returns c must yield 30."""
+        cpu = run_c("""
+            char f(char a, char b, char c) { return c; }
+            char main() { return f(10, 20, 30); }
+        """)
+        assert cpu.A == 30, f"Expected 30, got {cpu.A}"
+
+    def test_three_char_params_first_param_correct(self):
+        """f(10, 20, 30) where f returns a must yield 10."""
+        cpu = run_c("""
+            char f(char a, char b, char c) { return a; }
+            char main() { return f(10, 20, 30); }
+        """)
+        assert cpu.A == 10, f"Expected 10, got {cpu.A}"
+
+    def test_three_char_params_second_param_correct(self):
+        """f(10, 20, 30) where f returns b must yield 20."""
+        cpu = run_c("""
+            char f(char a, char b, char c) { return b; }
+            char main() { return f(10, 20, 30); }
+        """)
+        assert cpu.A == 20, f"Expected 20, got {cpu.A}"
+
+    def test_four_char_params_sum(self):
+        """f(1, 2, 3, 4) where f returns a+b+c+d must yield 10."""
+        cpu = run_c("""
+            char f(char a, char b, char c, char d) { return a + b + c + d; }
+            char main() { return f(1, 2, 3, 4); }
+        """)
+        assert cpu.A == 10, f"Expected 10, got {cpu.A}"
+
+    def test_five_char_params_sum(self):
+        """f(1, 2, 3, 4, 5) where f returns a+b+c+d+e must yield 15."""
+        cpu = run_c("""
+            char f(char a, char b, char c, char d, char e) {
+                return a + b + c + d + e;
+            }
+            char main() { return f(1, 2, 3, 4, 5); }
+        """)
+        assert cpu.A == 15, f"Expected 15, got {cpu.A}"
+
+    def test_third_param_is_int(self):
+        """Third param of type int (16-bit) must round-trip correctly."""
+        cpu = run_c("""
+            int f(char a, char b, int c) { return c; }
+            int main() { return f(1, 2, 300); }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 300, f"Expected 300, got {result}"

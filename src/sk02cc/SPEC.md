@@ -223,4 +223,4 @@ for correct instruction sequences, or end-to-end via the simulator).
 - Pointers and address-of (partial)
 - Array access
 - `do`/`while`, `switch`/`case`
-- More than 2 function parameters (stack-passed)
+- ~~More than 2 function parameters (stack-passed)~~ ✓ Done — params 3+ pushed right-to-left by caller, popped in order by callee

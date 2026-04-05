@@ -26,12 +26,8 @@ assembled using the sk02-asm assembler to produce binary output.
     parser.add_argument(
         "-o", "--output", help="Output assembly file (.asm)", default=None
     )
-    parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Verbose output"
-    )
-    parser.add_argument(
-        "--version", action="version", version="SK02-C compiler 0.1.0"
-    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    parser.add_argument("--version", action="version", version="SK02-C compiler 0.1.0")
 
     args = parser.parse_args()
 

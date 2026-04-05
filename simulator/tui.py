@@ -27,15 +27,15 @@ OPCODE_MAP: dict[int, tuple[str, object]] = {
 }
 
 # Opcodes that call subroutines (for step-over logic)
-GOSUB_OPCODE = OPCODES["GOSUB"].value        # 32 — 3-byte instruction
+GOSUB_OPCODE = OPCODES["GOSUB"].value  # 32 — 3-byte instruction
 GOSUB_COMP_OPCODE = OPCODES["GOSUB_COMP"].value  # 125 — 1-byte instruction
 
 
 @dataclass
 class DisasmLine:
     address: int
-    text: str       # formatted disassembly text
-    size: int       # instruction size in bytes
+    text: str  # formatted disassembly text
+    size: int  # instruction size in bytes
 
 
 def tui_disassemble(memory: Memory, start: int, count: int) -> list[DisasmLine]:
@@ -51,13 +51,17 @@ def tui_disassemble(memory: Memory, start: int, count: int) -> list[DisasmLine]:
                 addr = (addr + 1) & 0xFFFF
             elif opcode.operand == OperandType.IMM8:
                 operand = memory.read_byte((addr + 1) & 0xFFFF)
-                lines.append(DisasmLine(addr, f"${addr:04X}  {name:<12} #${operand:02X}", 2))
+                lines.append(
+                    DisasmLine(addr, f"${addr:04X}  {name:<12} #${operand:02X}", 2)
+                )
                 addr = (addr + 2) & 0xFFFF
             else:  # IMM16 or ADDR16
                 lo = memory.read_byte((addr + 1) & 0xFFFF)
                 hi = memory.read_byte((addr + 2) & 0xFFFF)
                 operand = lo | (hi << 8)
-                lines.append(DisasmLine(addr, f"${addr:04X}  {name:<12} ${operand:04X}", 3))
+                lines.append(
+                    DisasmLine(addr, f"${addr:04X}  {name:<12} ${operand:04X}", 3)
+                )
                 addr = (addr + 3) & 0xFFFF
         else:
             lines.append(DisasmLine(addr, f"${addr:04X}  DB           ${byte:02X}", 1))
@@ -68,23 +72,38 @@ def tui_disassemble(memory: Memory, start: int, count: int) -> list[DisasmLine]:
 def snapshot(cpu: CPU) -> dict:
     """Capture all CPU state into a plain dict."""
     return {
-        "A": cpu.A, "B": cpu.B, "C": cpu.C, "D": cpu.D,
-        "E": cpu.E, "F": cpu.F, "G": cpu.G, "H": cpu.H,
-        "AB": cpu.AB, "CD": cpu.CD, "EF": cpu.EF, "GH": cpu.GH,
+        "A": cpu.A,
+        "B": cpu.B,
+        "C": cpu.C,
+        "D": cpu.D,
+        "E": cpu.E,
+        "F": cpu.F,
+        "G": cpu.G,
+        "H": cpu.H,
+        "AB": cpu.AB,
+        "CD": cpu.CD,
+        "EF": cpu.EF,
+        "GH": cpu.GH,
         "PC": cpu.PC,
-        "Z": int(cpu.zero), "O": int(cpu.overflow), "I": int(cpu.interrupt),
-        "RSP": cpu.return_sp, "DSP": cpu.data_sp,
+        "Z": int(cpu.zero),
+        "O": int(cpu.overflow),
+        "I": int(cpu.interrupt),
+        "RSP": cpu.return_sp,
+        "DSP": cpu.data_sp,
         "count": cpu.instruction_count,
         "halted": cpu.halted,
-        "out_0": cpu.memory.out_0, "out_1": cpu.memory.out_1,
+        "out_0": cpu.memory.out_0,
+        "out_1": cpu.memory.out_1,
         "gpio": cpu.memory.gpio,
-        "x_input": cpu.memory.x_input, "y_input": cpu.memory.y_input,
+        "x_input": cpu.memory.x_input,
+        "y_input": cpu.memory.y_input,
     }
 
 
 # ---------------------------------------------------------------------------
 # Modal screens
 # ---------------------------------------------------------------------------
+
 
 class GoToAddressScreen(ModalScreen):
     """Dialog to enter a hex address."""
@@ -99,7 +118,9 @@ class GoToAddressScreen(ModalScreen):
         with Vertical(id="dialog"):
             yield Label(self._title, id="dialog-title")
             yield Input(placeholder="$8000 or 32768", id="addr-input")
-            yield Label("Enter hex ($XXXX), or decimal. Esc to cancel.", id="dialog-hint")
+            yield Label(
+                "Enter hex ($XXXX), or decimal. Esc to cancel.", id="dialog-hint"
+            )
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         raw = event.value.strip()
@@ -140,6 +161,7 @@ class LoadFileScreen(ModalScreen):
 # ---------------------------------------------------------------------------
 # Widgets
 # ---------------------------------------------------------------------------
+
 
 class RegistersPanel(Static):
     """Displays all CPU registers and flags; highlights changed values."""
@@ -263,7 +285,7 @@ class DisassemblyView(ScrollableContainer, can_focus=True):
 
         # Keep a window of ~40 lines around pc
         start = max(0, pc_idx - 10)
-        self._lines = lines[start:start + 40]
+        self._lines = lines[start : start + 40]
         self._pc_index = pc_idx - start
         self.cursor_index = self._pc_index
         self._rebuild()
@@ -355,7 +377,7 @@ class MemoryView(ScrollableContainer, can_focus=True):
         for col in range(self.COLS):
             addr = (row_addr + col) & 0xFFFF
             b = self._memory.read_byte(addr)
-            is_edit = (self._edit_addr == addr)
+            is_edit = self._edit_addr == addr
             if is_edit:
                 hex_bytes.append(f"[bold yellow]{self._edit_nibble}_[/bold yellow]")
             else:
@@ -387,7 +409,9 @@ class MemoryView(ScrollableContainer, can_focus=True):
         self.render_rows()
 
     def action_page_down(self) -> None:
-        self._base = min(0xFFFF - self.COLS * self.ROWS + 1, self._base + self.COLS * self.ROWS)
+        self._base = min(
+            0xFFFF - self.COLS * self.ROWS + 1, self._base + self.COLS * self.ROWS
+        )
         self.render_rows()
 
     def goto_address(self, addr: int) -> None:
@@ -422,6 +446,7 @@ class MemoryView(ScrollableContainer, can_focus=True):
 # ---------------------------------------------------------------------------
 # Main App
 # ---------------------------------------------------------------------------
+
 
 class SK02Debugger(App):
     """SK-02 TUI Debugger."""
@@ -575,7 +600,9 @@ class SK02Debugger(App):
             self.cpu.reset()
             self.cpu.PC = origin
             self._snap = snapshot(self.cpu)
-            self.status_text = f"Loaded {len(data)} bytes from {Path(path).name} at ${origin:04X}"
+            self.status_text = (
+                f"Loaded {len(data)} bytes from {Path(path).name} at ${origin:04X}"
+            )
             self._refresh_all()
         except OSError as e:
             self.status_text = f"[red]Load error: {e}[/red]"
@@ -595,7 +622,13 @@ class SK02Debugger(App):
         mem = self.query_one(MemoryView)
         mem.render_rows()
 
-        state = "HALTED" if self.cpu.halted else "RUNNING" if not self._stop_requested else "STOPPED"
+        state = (
+            "HALTED"
+            if self.cpu.halted
+            else "RUNNING"
+            if not self._stop_requested
+            else "STOPPED"
+        )
         snap_prev = self._snap
         self._snap = snap
         self.query_one("#status-bar", Label).update(
@@ -719,6 +752,7 @@ class SK02Debugger(App):
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def run_tui(binary: str | None = None, origin: int = 0x8000) -> None:
     """Launch the TUI debugger."""

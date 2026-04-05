@@ -25,6 +25,7 @@ class CodeGenerator:
         self.last_expr_type = None  # type of last Identifier expression evaluated
         self.needs_multiply = False  # emit __rt_mul subroutine if True
         self.needs_divide = False  # emit __rt_div subroutine if True
+        self.function_signatures: dict = {}  # func_name -> list[Parameter]
 
     def new_label(self, prefix: str = "L") -> str:
         """Generate a unique label."""
@@ -665,11 +666,30 @@ class CodeGenerator:
 
     def generate_function_call(self, expr: FunctionCall) -> None:
         """Generate function call code."""
-        # Phase 1: Support up to 2 parameters
-        if len(expr.arguments) > 2:
-            raise CodeGenError("Maximum 2 function parameters supported")
+        func_params = self.function_signatures.get(expr.function, [])
 
-        # Load arguments into registers
+        # Push stack params (3+) right-to-left so callee can pop in declaration order
+        if len(expr.arguments) > 2:
+            if len(expr.arguments) > len(func_params) and not func_params:
+                raise CodeGenError(
+                    f"Cannot determine parameter types for stack-passed arguments"
+                    f" to undeclared function '{expr.function}'"
+                )
+            for i in range(len(expr.arguments) - 1, 1, -1):
+                param_type = func_params[i].type if i < len(func_params) else None
+                is_16bit = param_type and (
+                    self.is_16bit_type(param_type) or self.is_pointer_type(param_type)
+                )
+                if is_16bit:
+                    self.generate_expression(expr.arguments[i], "AB")
+                    # Low byte (A) first, then high byte (B)
+                    self.emit("    PUSH_A")
+                    self.emit("    PUSH_B")
+                else:
+                    self.generate_expression(expr.arguments[i], "A")
+                    self.emit("    PUSH_A")
+
+        # Load params 1-2 into registers
         if len(expr.arguments) >= 1:
             self.generate_expression(expr.arguments[0], "A")
         if len(expr.arguments) >= 2:
@@ -848,6 +868,21 @@ class CodeGenerator:
                 self.emit("    EF++")
                 self.emit(f"    STORE_B_EF")
 
+        # Pop stack params (3+) in declaration order (caller pushed right-to-left)
+        for i in range(2, len(func.parameters)):
+            param = func.parameters[i]
+            if self.is_8bit_type(param.type):
+                self.emit(f"    POP_A")
+                self.emit(f"    STORE_A _{func.name}_{param.name}")
+            else:
+                # Pop high byte first (B), then low byte (A) — reverse of push order
+                self.emit(f"    POP_B")
+                self.emit(f"    POP_A")
+                self.emit(f"    SET_EF #_{func.name}_{param.name}")
+                self.emit(f"    STORE_A_EF")
+                self.emit("    EF++")
+                self.emit(f"    STORE_B_EF")
+
         # Generate body
         if func.body:
             for stmt in func.body.statements:
@@ -993,10 +1028,12 @@ class CodeGenerator:
         self.emit("    JMP _main")
         self.emit("")
 
-        # First pass: collect global variables
+        # First pass: collect global variables and function signatures
         for decl in program.declarations:
             if isinstance(decl, VariableDeclaration):
                 self.generate_global_var(decl)
+            elif isinstance(decl, FunctionDeclaration):
+                self.function_signatures[decl.name] = decl.parameters
 
         # Generate functions
         for decl in program.declarations:
