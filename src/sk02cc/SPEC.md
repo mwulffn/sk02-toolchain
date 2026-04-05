@@ -63,7 +63,7 @@ All local variables use **static storage** (no stack frames). This means:
 
 ## Operators
 
-### Fully supported (map directly to hardware)
+### Fully supported (map directly to hardware or via software subroutine)
 
 | Operator       | Types        | Hardware instruction(s)          |
 |----------------|--------------|----------------------------------|
@@ -86,6 +86,10 @@ All local variables use **static storage** (no stack frames). This means:
 | `!`            | any          | `A_ZERO` + conditional           |
 | `==` / `!=`    | uint8/int8   | `CMP` + `JMP_ZERO`               |
 | `==` / `!=`    | uint16/int16 | `CMP_16` + `JMP_ZERO`            |
+| `*`            | uint8        | `GOSUB __rt_mul` (shift-and-add, 16 iterations) |
+| `/`            | uint8        | `GOSUB __rt_div` (repeated subtraction)         |
+| `%`            | uint8        | `GOSUB __rt_div` + take remainder               |
+| `&&` / `\|\|` | any          | short-circuit with conditional jumps            |
 
 ### Unsigned comparisons (hardware-native)
 
@@ -108,12 +112,10 @@ CMP. Cost: ~4–6 extra instructions per comparison.
 | `=`                              | Supported        |
 | `+=`, `-=`, `&=`, `\|=`, `^=`   | Supported        |
 | `<<=`, `>>=`                     | Supported        |
-| `*=`, `/=`, `%=`                 | Tier 2 (software)|
+| `*=`, `/=`, `%=`                 | Supported (software subroutine) |
 
 ### Not supported (Tier 2 or out of scope)
 
-- `*` (multiply), `/` (divide), `%` (modulo) — Tier 2, software subroutines
-- `&&`, `||` — Tier 2, short-circuit evaluation
 - `?:` (ternary) — out of scope
 
 ---
@@ -216,9 +218,9 @@ for correct instruction sequences, or end-to-end via the simulator).
 
 ### Tier 2 — after Tier 1 is tested and solid
 
-- Software multiply/divide/modulo
-- Pointers and address-of
+- ~~Software multiply/divide/modulo~~ ✓ Done — `__rt_mul` / `__rt_div` subroutines, emitted only when used
+- ~~Logical `&&` / `||`~~ ✓ Done — short-circuit evaluation
+- Pointers and address-of (partial)
 - Array access
-- Logical `&&` / `||`
 - `do`/`while`, `switch`/`case`
 - More than 2 function parameters (stack-passed)

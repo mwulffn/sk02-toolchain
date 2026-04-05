@@ -78,7 +78,9 @@ class Lexer:
             self.advance()
             num_str += self.current_char()
             self.advance()
-            while self.current_char() and self.current_char() in "0123456789abcdefABCDEF":
+            while (
+                self.current_char() and self.current_char() in "0123456789abcdefABCDEF"
+            ):
                 num_str += self.current_char()
                 self.advance()
         else:
@@ -278,14 +280,38 @@ class Lexer:
                 self.tokens.append(Token(TokenType.MINUS, "-", start_line, start_col))
                 self.advance()
             elif ch == "*":
-                self.tokens.append(Token(TokenType.STAR, "*", start_line, start_col))
                 self.advance()
+                if self.pos < len(self.source) and self.source[self.pos] == "=":
+                    self.tokens.append(
+                        Token(TokenType.STAR_ASSIGN, "*=", start_line, start_col)
+                    )
+                    self.advance()
+                else:
+                    self.tokens.append(
+                        Token(TokenType.STAR, "*", start_line, start_col)
+                    )
             elif ch == "/":
-                self.tokens.append(Token(TokenType.SLASH, "/", start_line, start_col))
                 self.advance()
+                if self.pos < len(self.source) and self.source[self.pos] == "=":
+                    self.tokens.append(
+                        Token(TokenType.SLASH_ASSIGN, "/=", start_line, start_col)
+                    )
+                    self.advance()
+                else:
+                    self.tokens.append(
+                        Token(TokenType.SLASH, "/", start_line, start_col)
+                    )
             elif ch == "%":
-                self.tokens.append(Token(TokenType.PERCENT, "%", start_line, start_col))
                 self.advance()
+                if self.pos < len(self.source) and self.source[self.pos] == "=":
+                    self.tokens.append(
+                        Token(TokenType.PERCENT_ASSIGN, "%=", start_line, start_col)
+                    )
+                    self.advance()
+                else:
+                    self.tokens.append(
+                        Token(TokenType.PERCENT, "%", start_line, start_col)
+                    )
             elif ch == "&":
                 self.tokens.append(
                     Token(TokenType.AMPERSAND, "&", start_line, start_col)

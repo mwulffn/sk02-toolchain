@@ -19,6 +19,7 @@ from simulator.memory import Memory
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def asm_lines(source: str) -> list[str]:
     """Compile C source and return stripped, non-empty, non-comment lines."""
     output = compile_string(source)
@@ -72,6 +73,7 @@ def run_c(source: str, *, A: int = 0, B: int = 0, max_instructions: int = 10000)
 # wrong results. Only == and != work (they only check the zero flag).
 # ===========================================================================
 
+
 class TestCmpSemantics:
     """CMP-based comparisons must return correct results at runtime."""
 
@@ -79,90 +81,122 @@ class TestCmpSemantics:
 
     def test_less_than_true(self):
         """2 < 5 must return 1."""
-        cpu = run_c("char main(char a, char b) { if (a < b) return 1; return 0; }", A=2, B=5)
+        cpu = run_c(
+            "char main(char a, char b) { if (a < b) return 1; return 0; }", A=2, B=5
+        )
         assert cpu.A == 1, f"2 < 5 should be 1, got {cpu.A}"
 
     def test_less_than_false(self):
         """5 < 2 must return 0."""
-        cpu = run_c("char main(char a, char b) { if (a < b) return 1; return 0; }", A=5, B=2)
+        cpu = run_c(
+            "char main(char a, char b) { if (a < b) return 1; return 0; }", A=5, B=2
+        )
         assert cpu.A == 0, f"5 < 2 should be 0, got {cpu.A}"
 
     def test_less_than_equal_values(self):
         """3 < 3 must return 0."""
-        cpu = run_c("char main(char a, char b) { if (a < b) return 1; return 0; }", A=3, B=3)
+        cpu = run_c(
+            "char main(char a, char b) { if (a < b) return 1; return 0; }", A=3, B=3
+        )
         assert cpu.A == 0, f"3 < 3 should be 0, got {cpu.A}"
 
     # --- greater-than ---
 
     def test_greater_than_true(self):
         """5 > 2 must return 1."""
-        cpu = run_c("char main(char a, char b) { if (a > b) return 1; return 0; }", A=5, B=2)
+        cpu = run_c(
+            "char main(char a, char b) { if (a > b) return 1; return 0; }", A=5, B=2
+        )
         assert cpu.A == 1, f"5 > 2 should be 1, got {cpu.A}"
 
     def test_greater_than_false(self):
         """2 > 5 must return 0."""
-        cpu = run_c("char main(char a, char b) { if (a > b) return 1; return 0; }", A=2, B=5)
+        cpu = run_c(
+            "char main(char a, char b) { if (a > b) return 1; return 0; }", A=2, B=5
+        )
         assert cpu.A == 0, f"2 > 5 should be 0, got {cpu.A}"
 
     def test_greater_than_equal_values(self):
         """3 > 3 must return 0."""
-        cpu = run_c("char main(char a, char b) { if (a > b) return 1; return 0; }", A=3, B=3)
+        cpu = run_c(
+            "char main(char a, char b) { if (a > b) return 1; return 0; }", A=3, B=3
+        )
         assert cpu.A == 0, f"3 > 3 should be 0, got {cpu.A}"
 
     # --- less-than-or-equal ---
 
     def test_lte_true_less(self):
         """2 <= 5 must return 1."""
-        cpu = run_c("char main(char a, char b) { if (a <= b) return 1; return 0; }", A=2, B=5)
+        cpu = run_c(
+            "char main(char a, char b) { if (a <= b) return 1; return 0; }", A=2, B=5
+        )
         assert cpu.A == 1, f"2 <= 5 should be 1, got {cpu.A}"
 
     def test_lte_true_equal(self):
         """3 <= 3 must return 1."""
-        cpu = run_c("char main(char a, char b) { if (a <= b) return 1; return 0; }", A=3, B=3)
+        cpu = run_c(
+            "char main(char a, char b) { if (a <= b) return 1; return 0; }", A=3, B=3
+        )
         assert cpu.A == 1, f"3 <= 3 should be 1, got {cpu.A}"
 
     def test_lte_false(self):
         """5 <= 2 must return 0."""
-        cpu = run_c("char main(char a, char b) { if (a <= b) return 1; return 0; }", A=5, B=2)
+        cpu = run_c(
+            "char main(char a, char b) { if (a <= b) return 1; return 0; }", A=5, B=2
+        )
         assert cpu.A == 0, f"5 <= 2 should be 0, got {cpu.A}"
 
     # --- greater-than-or-equal ---
 
     def test_gte_true_greater(self):
         """5 >= 2 must return 1."""
-        cpu = run_c("char main(char a, char b) { if (a >= b) return 1; return 0; }", A=5, B=2)
+        cpu = run_c(
+            "char main(char a, char b) { if (a >= b) return 1; return 0; }", A=5, B=2
+        )
         assert cpu.A == 1, f"5 >= 2 should be 1, got {cpu.A}"
 
     def test_gte_true_equal(self):
         """3 >= 3 must return 1."""
-        cpu = run_c("char main(char a, char b) { if (a >= b) return 1; return 0; }", A=3, B=3)
+        cpu = run_c(
+            "char main(char a, char b) { if (a >= b) return 1; return 0; }", A=3, B=3
+        )
         assert cpu.A == 1, f"3 >= 3 should be 1, got {cpu.A}"
 
     def test_gte_false(self):
         """2 >= 5 must return 0."""
-        cpu = run_c("char main(char a, char b) { if (a >= b) return 1; return 0; }", A=2, B=5)
+        cpu = run_c(
+            "char main(char a, char b) { if (a >= b) return 1; return 0; }", A=2, B=5
+        )
         assert cpu.A == 0, f"2 >= 5 should be 0, got {cpu.A}"
 
     # --- equal / not-equal: must stay correct after the fix ---
 
     def test_equal_true(self):
         """3 == 3 must return 1."""
-        cpu = run_c("char main(char a, char b) { if (a == b) return 1; return 0; }", A=3, B=3)
+        cpu = run_c(
+            "char main(char a, char b) { if (a == b) return 1; return 0; }", A=3, B=3
+        )
         assert cpu.A == 1, f"3 == 3 should be 1, got {cpu.A}"
 
     def test_equal_false(self):
         """2 == 5 must return 0."""
-        cpu = run_c("char main(char a, char b) { if (a == b) return 1; return 0; }", A=2, B=5)
+        cpu = run_c(
+            "char main(char a, char b) { if (a == b) return 1; return 0; }", A=2, B=5
+        )
         assert cpu.A == 0, f"2 == 5 should be 0, got {cpu.A}"
 
     def test_not_equal_true(self):
         """2 != 5 must return 1."""
-        cpu = run_c("char main(char a, char b) { if (a != b) return 1; return 0; }", A=2, B=5)
+        cpu = run_c(
+            "char main(char a, char b) { if (a != b) return 1; return 0; }", A=2, B=5
+        )
         assert cpu.A == 1, f"2 != 5 should be 1, got {cpu.A}"
 
     def test_not_equal_false(self):
         """3 != 3 must return 0."""
-        cpu = run_c("char main(char a, char b) { if (a != b) return 1; return 0; }", A=3, B=3)
+        cpu = run_c(
+            "char main(char a, char b) { if (a != b) return 1; return 0; }", A=3, B=3
+        )
         assert cpu.A == 0, f"3 != 3 should be 0, got {cpu.A}"
 
 
@@ -171,6 +205,7 @@ class TestCmpSemantics:
 #
 # generate_assignment ignores expr.op entirely. x += 5 compiles as x = 5.
 # ===========================================================================
+
 
 class TestCompoundAssignment:
     """Compound assignments must read-modify-write, not just write."""
@@ -243,6 +278,7 @@ class TestCompoundAssignment:
 # Should use SET_AB + SET_CD + ST_AB_CD for 16-bit locals.
 # ===========================================================================
 
+
 class TestInt16LocalInit:
     """int local variable initializers must store both bytes."""
 
@@ -284,6 +320,7 @@ class TestInt16LocalInit:
 # Identifier/BinaryOp/FunctionCall all ignore result_reg and put their result
 # in A. The fix: after computing RHS into A, emit A>B, then POP_A.
 # ===========================================================================
+
 
 class TestBinaryOpRhsRegister:
     """Binary ops with variable RHS must yield the correct result."""
@@ -525,7 +562,9 @@ class TestSignedComparisons:
 
     def test_char_no_signed_cmp(self):
         """char comparison must NOT emit JMP_A_POS (char is unsigned)."""
-        lines = asm_lines("char main(char a, char b) { if (a < b) return 1; return 0; }")
+        lines = asm_lines(
+            "char main(char a, char b) { if (a < b) return 1; return 0; }"
+        )
         assert not any("JMP_A_POS" in l for l in lines), (
             "char comparison must not emit JMP_A_POS"
         )
@@ -621,13 +660,16 @@ class TestControlFlow:
 
     def test_nested_if_else(self):
         """Classify a value: <10 → 1, <100 → 2, else → 3."""
-        cpu = run_c("""
+        cpu = run_c(
+            """
             char main(char x) {
                 if (x < 10) return 1;
                 if (x < 100) return 2;
                 return 3;
             }
-        """, A=50)
+        """,
+            A=50,
+        )
         assert cpu.A == 2, f"50 should classify as 2, got {cpu.A}"
 
     def test_for_with_continue(self):
@@ -783,11 +825,14 @@ class TestShifts:
 
     def test_shift_multiply_by_8(self):
         """x << 3 should multiply by 8."""
-        cpu = run_c("""
+        cpu = run_c(
+            """
             char main(char x) {
                 return x << 3;
             }
-        """, A=5)
+        """,
+            A=5,
+        )
         assert cpu.A == 40, f"5 << 3 should be 40, got {cpu.A}"
 
 
@@ -846,22 +891,30 @@ class TestLogicalOperators:
 
     def test_and_with_comparisons(self):
         """(a > 0) && (b > 0) must return 1 when both positive."""
-        cpu = run_c("""
+        cpu = run_c(
+            """
             char main(char a, char b) {
                 if (a > 0 && b > 0) return 1;
                 return 0;
             }
-        """, A=5, B=3)
+        """,
+            A=5,
+            B=3,
+        )
         assert cpu.A == 1, f"5>0 && 3>0 should be 1, got {cpu.A}"
 
     def test_or_with_comparisons(self):
         """(a == 0) || (b == 0) must return 1 when one is zero."""
-        cpu = run_c("""
+        cpu = run_c(
+            """
             char main(char a, char b) {
                 if (a == 0 || b == 0) return 1;
                 return 0;
             }
-        """, A=0, B=5)
+        """,
+            A=0,
+            B=5,
+        )
         assert cpu.A == 1, f"0==0 || 5==0 should be 1, got {cpu.A}"
 
     def test_and_short_circuit_skips_rhs(self):
@@ -875,7 +928,9 @@ class TestLogicalOperators:
             }
             char bump() { g = 99; return 1; }
         """)
-        assert cpu.A == 0, f"RHS of 0 && bump() must not run; g should stay 0, got {cpu.A}"
+        assert cpu.A == 0, (
+            f"RHS of 0 && bump() must not run; g should stay 0, got {cpu.A}"
+        )
 
     def test_mixed_precedence(self):
         """a || b && c: && binds tighter, so a || (b && c)."""
@@ -894,21 +949,188 @@ class TestLogicalOperators:
         # Use: a=0, b=1, c=1 with a && b || c
         # Correct: (0 && 1) || 1 = 0 || 1 = 1
         # Wrong:    0 && (1 || 1) = 0 && 1 = 0  <-- distinguishable!
-        cpu = run_c("""
+        cpu = run_c(
+            """
             char main(char a, char b, char c) {
                 if (a && b || c) return 1;
                 return 0;
             }
-        """, A=0, B=1)
+        """,
+            A=0,
+            B=1,
+        )
         # c is passed via stack (not yet supported); use only a and b
         # Rewrite: a=0, b=1 → (0 && 1) || 0 isn't testable without c
         # Simplify: just test a && b || 1 with a=0, b=1
         # (0 && 1) || 1 = 0 || 1 = 1 (correct &&-tighter)
         # 0 && (1 || 1) = 0 && 1  = 0 (wrong ||-tighter)
-        cpu = run_c("""
+        cpu = run_c(
+            """
             char main(char a, char b) {
                 if (a && b || 1) return 1;
                 return 0;
             }
-        """, A=0, B=1)
+        """,
+            A=0,
+            B=1,
+        )
         assert cpu.A == 1, f"(0&&1)||1 should be 1, got {cpu.A}"
+
+
+# =============================================================================
+# Multiply, Divide, Modulo (Tier 2 software subroutines)
+# =============================================================================
+
+
+class TestMultiplyDivide:
+    """Software multiply, divide, and modulo operators (* / %).
+
+    The SK-02 has no hardware multiply/divide. The compiler emits helper
+    subroutines (__rt_mul, __rt_div) at the end of the output, only when
+    the operators are actually used — no bloat otherwise.
+    """
+
+    # --- structural tests ---
+
+    def test_multiply_emits_gosub_rt_mul(self):
+        """* must emit GOSUB __rt_mul."""
+        lines = asm_lines("char main(char a, char b) { return a * b; }")
+        assert "GOSUB __rt_mul" in lines, "* must emit GOSUB __rt_mul"
+
+    def test_divide_emits_gosub_rt_div(self):
+        """/ must emit GOSUB __rt_div."""
+        lines = asm_lines("char main(char a, char b) { return a / b; }")
+        assert "GOSUB __rt_div" in lines, "/ must emit GOSUB __rt_div"
+
+    def test_modulo_emits_gosub_rt_div(self):
+        """% must emit GOSUB __rt_div (reuses divide, takes remainder)."""
+        lines = asm_lines("char main(char a, char b) { return a % b; }")
+        assert "GOSUB __rt_div" in lines, "% must emit GOSUB __rt_div"
+
+    def test_no_mul_routine_when_unused(self):
+        """__rt_mul: must NOT appear if * is not used."""
+        lines = asm_lines("char main(char a, char b) { return a + b; }")
+        assert "__rt_mul:" not in lines, "__rt_mul must not be emitted when unused"
+
+    def test_no_div_routine_when_unused(self):
+        """__rt_div: must NOT appear if / and % are not used."""
+        lines = asm_lines("char main(char a, char b) { return a + b; }")
+        assert "__rt_div:" not in lines, "__rt_div must not be emitted when unused"
+
+    def test_mul_routine_emitted_when_used(self):
+        """__rt_mul: must appear in output when * is used."""
+        lines = asm_lines("char main(char a, char b) { return a * b; }")
+        assert "__rt_mul:" in lines, "__rt_mul must be emitted when * is used"
+
+    def test_div_routine_emitted_when_used(self):
+        """__rt_div: must appear in output when / is used."""
+        lines = asm_lines("char main(char a, char b) { return a / b; }")
+        assert "__rt_div:" in lines, "__rt_div must be emitted when / is used"
+
+    # --- multiply runtime tests ---
+
+    def test_multiply_3_by_7(self):
+        """3 * 7 must return 21."""
+        cpu = run_c("char main(char a, char b) { return a * b; }", A=3, B=7)
+        assert cpu.A == 21, f"3 * 7 should be 21, got {cpu.A}"
+
+    def test_multiply_by_zero(self):
+        """5 * 0 must return 0."""
+        cpu = run_c("char main(char a, char b) { return a * b; }", A=5, B=0)
+        assert cpu.A == 0, f"5 * 0 should be 0, got {cpu.A}"
+
+    def test_multiply_by_one(self):
+        """7 * 1 must return 7."""
+        cpu = run_c("char main(char a, char b) { return a * b; }", A=7, B=1)
+        assert cpu.A == 7, f"7 * 1 should be 7, got {cpu.A}"
+
+    def test_multiply_15_by_17(self):
+        """15 * 17 = 255, max meaningful 8-bit result."""
+        cpu = run_c("char main(char a, char b) { return a * b; }", A=15, B=17)
+        assert cpu.A == 255, f"15 * 17 should be 255, got {cpu.A}"
+
+    # --- divide runtime tests ---
+
+    def test_divide_42_by_7(self):
+        """42 / 7 must return 6."""
+        cpu = run_c("char main(char a, char b) { return a / b; }", A=42, B=7)
+        assert cpu.A == 6, f"42 / 7 should be 6, got {cpu.A}"
+
+    def test_divide_truncates(self):
+        """10 / 3 must return 3 (truncation)."""
+        cpu = run_c("char main(char a, char b) { return a / b; }", A=10, B=3)
+        assert cpu.A == 3, f"10 / 3 should be 3, got {cpu.A}"
+
+    def test_divide_zero_by_n(self):
+        """0 / 5 must return 0."""
+        cpu = run_c("char main(char a, char b) { return a / b; }", A=0, B=5)
+        assert cpu.A == 0, f"0 / 5 should be 0, got {cpu.A}"
+
+    def test_divide_by_one(self):
+        """42 / 1 must return 42."""
+        cpu = run_c("char main(char a, char b) { return a / b; }", A=42, B=1)
+        assert cpu.A == 42, f"42 / 1 should be 42, got {cpu.A}"
+
+    # --- modulo runtime tests ---
+
+    def test_modulo_10_by_3(self):
+        """10 % 3 must return 1."""
+        cpu = run_c("char main(char a, char b) { return a % b; }", A=10, B=3)
+        assert cpu.A == 1, f"10 % 3 should be 1, got {cpu.A}"
+
+    def test_modulo_exact_division(self):
+        """42 % 7 must return 0 (exact division)."""
+        cpu = run_c("char main(char a, char b) { return a % b; }", A=42, B=7)
+        assert cpu.A == 0, f"42 % 7 should be 0, got {cpu.A}"
+
+    def test_modulo_255_by_10(self):
+        """255 % 10 must return 5."""
+        cpu = run_c("char main(char a, char b) { return a % b; }", A=255, B=10)
+        assert cpu.A == 5, f"255 % 10 should be 5, got {cpu.A}"
+
+    # --- compound assignment tests ---
+
+    def test_mul_assign(self):
+        """x *= 3 must multiply in place."""
+        cpu = run_c(
+            """
+            char main(char a) {
+                char x;
+                x = a;
+                x *= 3;
+                return x;
+            }
+        """,
+            A=7,
+        )
+        assert cpu.A == 21, f"7 *= 3 should be 21, got {cpu.A}"
+
+    def test_div_assign(self):
+        """x /= 2 must divide in place."""
+        cpu = run_c(
+            """
+            char main(char a) {
+                char x;
+                x = a;
+                x /= 2;
+                return x;
+            }
+        """,
+            A=42,
+        )
+        assert cpu.A == 21, f"42 /= 2 should be 21, got {cpu.A}"
+
+    def test_mod_assign(self):
+        """x %= 5 must compute remainder in place."""
+        cpu = run_c(
+            """
+            char main(char a) {
+                char x;
+                x = a;
+                x %= 5;
+                return x;
+            }
+        """,
+            A=13,
+        )
+        assert cpu.A == 3, f"13 %= 5 should be 3, got {cpu.A}"

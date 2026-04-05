@@ -119,7 +119,9 @@ class Parser:
                     ident_token.value, args, ident_token.line, ident_token.column
                 )
             else:
-                return Identifier(ident_token.value, ident_token.line, ident_token.column)
+                return Identifier(
+                    ident_token.value, ident_token.line, ident_token.column
+                )
 
         # Parenthesized expression
         elif self.match(TokenType.LPAREN):
@@ -165,7 +167,9 @@ class Parser:
         ):
             op_token = self.advance()
             operand = self.parse_unary_expression()
-            return UnaryOp(op_token.value, operand, False, op_token.line, op_token.column)
+            return UnaryOp(
+                op_token.value, operand, False, op_token.line, op_token.column
+            )
 
         return self.parse_postfix_expression()
 
@@ -219,13 +223,18 @@ class Parser:
             TokenType.ASSIGN,
             TokenType.PLUS_ASSIGN,
             TokenType.MINUS_ASSIGN,
+            TokenType.STAR_ASSIGN,
+            TokenType.SLASH_ASSIGN,
+            TokenType.PERCENT_ASSIGN,
             TokenType.AND_ASSIGN,
             TokenType.OR_ASSIGN,
             TokenType.XOR_ASSIGN,
         ):
             op_token = self.advance()
             value = self.parse_assignment_expression()
-            return Assignment(expr, op_token.value, value, op_token.line, op_token.column)
+            return Assignment(
+                expr, op_token.value, value, op_token.line, op_token.column
+            )
 
         return expr
 
@@ -286,7 +295,9 @@ class Parser:
             incr = None if self.match(TokenType.RPAREN) else self.parse_expression()
             self.expect(TokenType.RPAREN)
             body = self.parse_statement()
-            return ForStatement(init, cond, incr, body, for_token.line, for_token.column)
+            return ForStatement(
+                init, cond, incr, body, for_token.line, for_token.column
+            )
 
         # Break
         elif self.match(TokenType.BREAK):

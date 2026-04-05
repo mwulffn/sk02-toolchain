@@ -23,6 +23,8 @@ class CodeGenerator:
         self.break_labels = []
         self.continue_labels = []
         self.last_expr_type = None  # type of last Identifier expression evaluated
+        self.needs_multiply = False  # emit __rt_mul subroutine if True
+        self.needs_divide = False  # emit __rt_div subroutine if True
 
     def new_label(self, prefix: str = "L") -> str:
         """Generate a unique label."""
@@ -212,6 +214,28 @@ class CodeGenerator:
                 self.generate_signed_comparison(expr.op)
             else:
                 self.generate_comparison(expr.op)
+        elif expr.op == "*":
+            # After setup: A=left, B=right. Need AB=(left,0), CD=(right,0).
+            self.emit("    PUSH_A")  # save left
+            self.emit("    0>A")
+            self.emit("    A>D")  # D = 0
+            self.emit("    B>C")  # C = right
+            self.emit("    0>B")  # B = 0
+            self.emit("    POP_A")  # A = left
+            self.emit("    GOSUB __rt_mul")
+            self.needs_multiply = True
+        elif expr.op in ("/", "%"):
+            # After setup: A=dividend, B=divisor. Need AB=(dividend,0), CD=(divisor,0).
+            self.emit("    PUSH_A")  # save dividend
+            self.emit("    0>A")
+            self.emit("    A>D")  # D = 0
+            self.emit("    B>C")  # C = divisor
+            self.emit("    0>B")  # B = 0
+            self.emit("    POP_A")  # A = dividend
+            self.emit("    GOSUB __rt_div")
+            if expr.op == "%":
+                self.emit("    C>A")  # remainder is in C (low byte of CD)
+            self.needs_divide = True
         else:
             raise CodeGenError(f"Unsupported binary operator: {expr.op}")
 
@@ -250,7 +274,7 @@ class CodeGenerator:
             self.emit(f"{try_right}:")
             self.generate_expression(expr.right, "A")
             self.emit("    A_ZERO")
-            self.emit(f"    JMP_ZERO {end_label}")   # A is already 0 → fall to end
+            self.emit(f"    JMP_ZERO {end_label}")  # A is already 0 → fall to end
             self.emit(f"{true_label}:")
             self.emit("    SET_A #1")
 
@@ -298,8 +322,8 @@ class CodeGenerator:
             self.emit(f"    JMP {true_label}")
         elif op == "<=":
             # true when overflow set (A < B) OR zero set (A == B)
-            self.emit(f"    JMP_OVER {true_label}")   # A < B → true
-            self.emit(f"    JMP_ZERO {true_label}")   # A == B → true
+            self.emit(f"    JMP_OVER {true_label}")  # A < B → true
+            self.emit(f"    JMP_ZERO {true_label}")  # A == B → true
             self.emit(f"    JMP {false_label}")
         else:
             raise CodeGenError(f"Unknown comparison operator: {op}")
@@ -331,8 +355,8 @@ class CodeGenerator:
         which covers the common cases tested here.
         """
         a_pos = self.new_label("sgn_a_pos")
-        diff_a_neg = self.new_label("sgn_diff_a_neg")   # A neg, B pos: A < B
-        diff_a_pos = self.new_label("sgn_diff_a_pos")   # A pos, B neg: A > B
+        diff_a_neg = self.new_label("sgn_diff_a_neg")  # A neg, B pos: A < B
+        diff_a_pos = self.new_label("sgn_diff_a_pos")  # A pos, B neg: A > B
         same_sign = self.new_label("sgn_same")
         true_label = self.new_label("sgn_true")
         false_label = self.new_label("sgn_false")
@@ -341,12 +365,12 @@ class CodeGenerator:
         # Check sign of left (A)
         self.emit(f"    JMP_A_POS {a_pos}")
         # A negative: check B
-        self.emit(f"    JMP_B_POS {diff_a_neg}")         # B positive → A < B
-        self.emit(f"    JMP {same_sign}")                 # both negative
+        self.emit(f"    JMP_B_POS {diff_a_neg}")  # B positive → A < B
+        self.emit(f"    JMP {same_sign}")  # both negative
 
         self.emit(f"{a_pos}:")
         # A non-negative: check B
-        self.emit(f"    JMP_B_POS {same_sign}")           # both positive
+        self.emit(f"    JMP_B_POS {same_sign}")  # both positive
         # A positive, B negative: A > B
         self.emit(f"    JMP {diff_a_pos}")
 
@@ -562,9 +586,9 @@ class CodeGenerator:
         if expr.op != "=":
             if is_16bit:
                 # 16-bit compound: RHS in AB, LHS on stack
-                self.emit("    AB>CD")   # move RHS to CD
-                self.emit("    POP_B")   # restore LHS high byte
-                self.emit("    POP_A")   # restore LHS low byte
+                self.emit("    AB>CD")  # move RHS to CD
+                self.emit("    POP_B")  # restore LHS high byte
+                self.emit("    POP_A")  # restore LHS low byte
                 op_map = {
                     "+=": "AB+CD",
                     "-=": "AB-CD",
@@ -577,7 +601,7 @@ class CodeGenerator:
                     )
             else:
                 # 8-bit compound: RHS in A, LHS on stack
-                self.emit("    A>B")    # move RHS to B
+                self.emit("    A>B")  # move RHS to B
                 self.emit("    POP_A")  # restore LHS
                 op_map = {
                     "+=": "ADD",
@@ -588,14 +612,33 @@ class CodeGenerator:
                 }
                 if expr.op in op_map:
                     self.emit(f"    {op_map[expr.op]}")
+                elif expr.op in ("*=", "/=", "%="):
+                    # After A>B / POP_A: A=LHS, B=RHS
+                    # Need AB=(LHS,0), CD=(RHS,0)
+                    self.emit("    PUSH_A")  # save LHS
+                    self.emit("    0>A")
+                    self.emit("    A>D")  # D = 0
+                    self.emit("    B>C")  # C = RHS
+                    self.emit("    0>B")  # B = 0
+                    self.emit("    POP_A")  # A = LHS
+                    if expr.op == "*=":
+                        self.emit("    GOSUB __rt_mul")
+                        self.needs_multiply = True
+                    else:
+                        self.emit("    GOSUB __rt_div")
+                        if expr.op == "%=":
+                            self.emit("    C>A")
+                        self.needs_divide = True
                 elif expr.op in ("<<=", ">>="):
                     # Shift: value in A, count in B
-                    self.emit("    A>B")   # count (RHS) already in B... wait
+                    self.emit("    A>B")  # count (RHS) already in B... wait
                     # Actually after A>B: B=RHS, A=LHS (from POP_A)
                     # We need shift count in B and value in A — that's correct
                     shift_op = "A<<" if expr.op == "<<=" else "A>>"
                     # Generate a shift loop (reuse binary op shift logic)
-                    loop_label = self.new_label("shift_left" if expr.op == "<<=" else "shift_right")
+                    loop_label = self.new_label(
+                        "shift_left" if expr.op == "<<=" else "shift_right"
+                    )
                     end_label = self.new_label("shift_end")
                     self.emit("    PUSH_A")
                     self.emit(f"{loop_label}:")
@@ -611,9 +654,7 @@ class CodeGenerator:
                     self.emit(f"{end_label}:")
                     self.emit("    POP_A")
                 else:
-                    raise CodeGenError(
-                        f"Unsupported compound operator: {expr.op}"
-                    )
+                    raise CodeGenError(f"Unsupported compound operator: {expr.op}")
 
         # Store result
         if is_16bit:
@@ -819,6 +860,92 @@ class CodeGenerator:
         if self.local_vars:
             self.all_local_vars[func.name] = self.local_vars.copy()
 
+    def generate_runtime_routines(self) -> None:
+        """Emit software multiply/divide subroutines, only if used."""
+        if self.needs_multiply:
+            self.emit("")
+            self.emit_comment(
+                "Software multiply: AB = AB * CD (8-bit operands, 16-bit result)"
+            )
+            self.emit("__rt_mul:")
+            self.emit("    PUSH_E")
+            self.emit("    PUSH_F")
+            self.emit("    PUSH_G")
+            self.emit("    PUSH_H")
+            self.emit("    PUSH_A")
+            self.emit("    SET_A #16")
+            self.emit("    A>G")
+            self.emit("    POP_A")
+            self.emit("    AB>EF")
+            self.emit("    0>A")
+            self.emit("    0>B")
+            self.emit("__rt_mul_loop:")
+            self.emit("    PUSH_A")
+            self.emit("    E>A")
+            self.emit("    JMP_A_EVEN __rt_mul_skip")
+            self.emit("    POP_A")
+            self.emit("    AB+CD")
+            self.emit("    JMP __rt_mul_next")
+            self.emit("__rt_mul_skip:")
+            self.emit("    POP_A")
+            self.emit("__rt_mul_next:")
+            self.emit("    PUSH_A")
+            self.emit("    EF>>")
+            self.emit("    CD<<")
+            self.emit("    G>A")
+            self.emit("    A--")
+            self.emit("    A>G")
+            self.emit("    POP_A")
+            self.emit("    JMP_ZERO __rt_mul_done")
+            self.emit("    JMP __rt_mul_loop")
+            self.emit("__rt_mul_done:")
+            self.emit("    POP_H")
+            self.emit("    POP_G")
+            self.emit("    POP_F")
+            self.emit("    POP_E")
+            self.emit("    RETURN")
+
+        if self.needs_divide:
+            self.emit("")
+            self.emit_comment("Software divide: A=dividend, C=divisor.")
+            self.emit_comment(
+                "Returns: A=quotient, C=remainder. Halts on divide by zero."
+            )
+            self.emit("__rt_div:")
+            self.emit("    PUSH_E")
+            self.emit("    PUSH_H")
+            # Check for divide by zero: save A, test C, restore A
+            self.emit("    A>H")  # H = dividend (save)
+            self.emit("    C>A")  # A = divisor
+            self.emit("    A_ZERO")  # zero flag = (divisor == 0)
+            self.emit("    JMP_ZERO __rt_div_halt")
+            self.emit("    H>A")  # A = dividend (restore)
+            # Initialize quotient in E = 0
+            self.emit("    A>H")  # H = dividend
+            self.emit("    0>A")
+            self.emit("    A>E")  # E = 0 (quotient)
+            self.emit("    H>A")  # A = dividend
+            self.emit("__rt_div_loop:")
+            self.emit("    CMP_C")  # sets overflow=True if A < C
+            self.emit("    JMP_OVER __rt_div_done")
+            self.emit("    SUB_C")  # A = A - C
+            self.emit("    A>H")  # H = remainder (save)
+            self.emit("    E>A")
+            self.emit("    A++")
+            self.emit("    A>E")  # E = quotient + 1
+            self.emit("    H>A")  # A = remainder (restore)
+            self.emit("    JMP __rt_div_loop")
+            self.emit("__rt_div_halt:")
+            self.emit("    HALT")
+            self.emit("__rt_div_done:")
+            # A = remainder, E = quotient
+            self.emit("    A>H")  # H = remainder
+            self.emit("    E>A")  # A = quotient
+            self.emit("    H>C")  # C = remainder (for % operator)
+            self.emit("    POP_H")
+            self.emit("    POP_E")
+            self.emit("    RETURN")
+
     def generate_data_section(self) -> None:
         """Generate data section with variables."""
         self.emit("")
@@ -875,6 +1002,9 @@ class CodeGenerator:
         for decl in program.declarations:
             if isinstance(decl, FunctionDeclaration):
                 self.generate_function(decl)
+
+        # Emit runtime subroutines (only if used)
+        self.generate_runtime_routines()
 
         # Generate data section
         self.generate_data_section()

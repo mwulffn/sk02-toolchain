@@ -57,6 +57,7 @@ class TokenType(Enum):
     MINUS_ASSIGN = auto()
     STAR_ASSIGN = auto()
     SLASH_ASSIGN = auto()
+    PERCENT_ASSIGN = auto()
     AND_ASSIGN = auto()
     OR_ASSIGN = auto()
     XOR_ASSIGN = auto()
@@ -104,9 +105,7 @@ KEYWORDS = {
 class Token:
     """Represents a token in the source code."""
 
-    def __init__(
-        self, type: TokenType, value: str, line: int, column: int
-    ):
+    def __init__(self, type: TokenType, value: str, line: int, column: int):
         self.type = type
         self.value = value
         self.line = line
