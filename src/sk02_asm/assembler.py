@@ -12,15 +12,24 @@ from .lexer import TokenType
 from .opcodes import OperandType, get_opcode
 from .output import BinaryWriter, IntelHexWriter
 from .parser import SourceLine, parse_source
+from .preprocessor import Preprocessor
 from .symbols import SymbolTable
 
 
 class Assembler:
     """Two-pass assembler."""
 
-    def __init__(self, source: str, start_address: int = 0x8000):
+    def __init__(
+        self,
+        source: str,
+        start_address: int = 0x8000,
+        source_file: Path | None = None,
+        include_paths: list[Path] | None = None,
+    ):
         self.source = source
         self.start_address = start_address
+        self.source_file = source_file
+        self.include_paths = include_paths or []
         self.symbols = SymbolTable()
         self.lines: list[SourceLine] = []
         self.errors: list[AssemblyError] = []
@@ -31,9 +40,17 @@ class Assembler:
         Assemble source code in two passes.
         Returns (binary_output, errors).
         """
+        # Preprocess (includes, macros)
+        try:
+            preprocessor = Preprocessor(self.include_paths)
+            processed_source = preprocessor.process(self.source, self.source_file)
+        except AssemblyError as e:
+            self.errors.append(e)
+            return BinaryWriter(self.start_address), self.errors
+
         # Parse source
         try:
-            self.lines = parse_source(self.source)
+            self.lines = parse_source(processed_source)
         except AssemblyError as e:
             self.errors.append(e)
             return BinaryWriter(self.start_address), self.errors
@@ -237,6 +254,7 @@ def assemble_file(
     output_file: str | Path | None = None,
     format: str = "bin",
     start_address: int = 0x8000,
+    include_paths: list[Path] | None = None,
 ) -> bool:
     """
     Assemble a file.
@@ -258,7 +276,7 @@ def assemble_file(
         source = f.read()
 
     # Assemble
-    assembler = Assembler(source, start_address)
+    assembler = Assembler(source, start_address, input_path, include_paths)
     output, errors = assembler.assemble()
 
     # Report errors

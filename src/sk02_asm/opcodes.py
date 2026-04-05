@@ -154,9 +154,9 @@ OPCODES: dict[str, Opcode] = {
     "CLEAR_INTER": Opcode(126, OperandType.NONE, 1),
     "HALT": Opcode(127, OperandType.NONE, 1),
     # Extended opcodes (128-254)
-    "ADD_c": Opcode(128, OperandType.NONE, 1),
-    "SUB_c": Opcode(129, OperandType.NONE, 1),
-    "CMP_c": Opcode(130, OperandType.NONE, 1),
+    "ADD_C": Opcode(128, OperandType.NONE, 1),
+    "SUB_C": Opcode(129, OperandType.NONE, 1),
+    "CMP_C": Opcode(130, OperandType.NONE, 1),
     "AB++": Opcode(131, OperandType.NONE, 1),
     "AB--": Opcode(132, OperandType.NONE, 1),
     "CD++": Opcode(133, OperandType.NONE, 1),

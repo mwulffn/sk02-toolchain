@@ -315,12 +315,12 @@ def execute_opcode(cpu: "CPU", mnemonic: str, opcode_byte: int) -> None:
         cpu.overflow = result < 0
         cpu.A = result & 0xFF
         cpu.update_zero_flag(cpu.A)
-    elif mnemonic == "ADD_c":
+    elif mnemonic == "ADD_C":
         result = cpu.A + cpu.C
         cpu.overflow = result > 0xFF
         cpu.A = result & 0xFF
         cpu.update_zero_flag(cpu.A)
-    elif mnemonic == "SUB_c":
+    elif mnemonic == "SUB_C":
         result = cpu.A - cpu.C
         cpu.overflow = result < 0
         cpu.A = result & 0xFF
@@ -444,7 +444,7 @@ def execute_opcode(cpu: "CPU", mnemonic: str, opcode_byte: int) -> None:
         result = cpu.A - cpu.B
         cpu.zero = (result & 0xFF) == 0
         cpu.overflow = result < 0
-    elif mnemonic == "CMP_c":
+    elif mnemonic == "CMP_C":
         result = cpu.A - cpu.C
         cpu.zero = (result & 0xFF) == 0
         cpu.overflow = result < 0

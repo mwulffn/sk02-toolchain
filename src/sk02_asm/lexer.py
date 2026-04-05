@@ -91,7 +91,7 @@ class Lexer:
 
         # Check for mnemonic (only if no directive on this line)
         if line and not has_directive:
-            match = re.match(r"^([A-Z_][A-Z0-9_>+\-<]*)", line, re.IGNORECASE)
+            match = re.match(r"^([A-Z0-9_][A-Z0-9_>+\-<]*)", line, re.IGNORECASE)
             if match:
                 mnemonic = match.group(1).upper()
                 self.tokens.append(Token(TokenType.MNEMONIC, mnemonic, line_num, pos))

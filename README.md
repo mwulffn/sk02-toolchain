@@ -1,20 +1,13 @@
-# SK-02 Development Tools
+# SK-02 Toolchain
 
-A complete development toolchain for the SK-02 8-bit homebrew computer:
-- **SK02-C Compiler** - C subset compiler (Phase 1 complete)
-- **SK-02 Assembler** - Full-featured assembler with 214 opcodes
-- **SK-02 Simulator** - Interactive debugger and execution simulator
+En samlet udviklingsvaerktoejskasse til [SK-02 8-bit computeren](https://soerko.dk/CPU_mark2/mark2.html) -- en hjemmebygget 8-bit CPU med custom instruktionssaet.
 
-## Features
+Toolchainen bestaar af:
 
-- **214 opcodes** - Full instruction set (0-127 simple, 128-254 extended)
-- **8 registers** - A, B, C, D, E, F, G, H (can be paired for 16-bit operations)
-- **6502-style syntax** - Familiar assembly language conventions
-- **Multiple output formats** - Binary and Intel HEX
-- **Label support** - Global and local labels with scoping
-- **Assembler directives** - .ORG, .EQU, .BYTE, .WORD, .ASCII, .ASCIIZ
-- **Two-pass assembly** - Forward references supported
-- **Little-endian** - Address format (low byte first)
+- **Assembler** -- fuldt funktionel to-pass assembler med makro- og include-support
+- **C-compiler** -- eksperimentel compiler fra et C-subset til SK-02 assembly
+- **Simulator** -- CPU-simulator med tekst- og TUI-debugger
+- **Standardbibliotek** -- 16 makroer porteret fra den originale Perl-assembler
 
 ## Installation
 
@@ -22,226 +15,265 @@ A complete development toolchain for the SK-02 8-bit homebrew computer:
 uv sync
 ```
 
-## Quick Start
+Kraever Python 3.13+.
 
-### C Compiler
+---
 
-```bash
-# Easy way: Use the build script (C to binary in one step)
-./sk02-build examples/hello.c
+## Assembler
 
-# Quiet mode (no prompts, auto-cleanup)
-./sk02-build-quiet examples/hello.c examples/hello.bin
+**Status: Stabil.** 210 opcodes, 6 direktiver, fuld makro/include-support. Testet med 83 unit tests.
 
-# For simulator: C to simulator text format
-./sk02-build-sim examples/hello.c examples/hello.txt
+Assembleren er en to-pass assembler der haandterer:
+- Alle 210 SK-02 opcodes (simple, immediate og adresse-instruktioner)
+- Lokale labels med scoping (`.label` under naermeste globale label)
+- Forward references (labels der bruges foer de er defineret)
+- `.INCLUDE` med soegesti og cyklus-detektion
+- `.MACRO` / `.ENDM` med `\@`-taeller til unikke labels
+- Rekursiv makro-expansion (makroer der kalder makroer)
+- Tal-formater: `$hex`, `%binaer`, decimal, `'char'`
+- Output i binaer- og Intel HEX-format
 
-# Manual way: Compile C to assembly
-uv run sk02cc examples/hello.c
+**Begraensninger:** Ingen aritmetiske udtryk i operander (f.eks. `LABEL+1`), ingen `.DS`/`.SPACE`-direktiv, makroer tager ikke parametre.
 
-# Then assemble to binary
-uv run sk02-asm examples/hello.asm -o examples/hello.bin
-
-# Convert binary to simulator format
-./bin2sim examples/hello.bin -o examples/hello.txt
-```
-
-See [docs/compiler-usage.md](docs/compiler-usage.md) for complete compiler documentation.
-
-### Supported C Features (Phase 1)
-- Types: `char`, `int`, `char*`, `int*`
-- Operators: arithmetic, bitwise, comparison, logical
-- Control: `if/else`, `while`, `for`, `break`, `continue`, `return`
-- Functions: non-recursive, max 2 int params
-- Variables: global (local variables in Phase 2)
-
-**Important**: No recursion, no structs, no preprocessor. See feasibility doc for details.
-
-### Simulator
+### Brug
 
 ```bash
-# Run a program in batch mode
-./sk02-sim examples/simple.bin --run
+# Assembler til binaer
+uv run sk02-asm program.asm -o program.bin
 
-# Interactive debugging
-./sk02-sim examples/simple.bin
+# Med include-sti til standardbiblioteket
+uv run sk02-asm program.asm -I lib -o program.bin
 
-# Or use Python module directly
-uv run python -m simulator examples/simple.bin
+# Intel HEX format
+uv run sk02-asm program.asm -f hex -o program.hex
 
-# Interactive commands:
-#   step [n]       - Execute n instructions
-#   run            - Run until HALT or breakpoint
-#   break <addr>   - Set breakpoint
-#   regs           - Show registers
-#   mem <addr>     - Show memory
-#   disasm <addr>  - Disassemble code
-#   io             - Show I/O status
-#   help           - Show all commands
+# Generer listing-fil
+uv run sk02-asm program.asm -l program.lst
+
+# Saet origin-adresse (standard: $8000)
+uv run sk02-asm program.asm --org 0x9000
 ```
 
-See [docs/simulator.md](docs/simulator.md) for complete simulator documentation.
+### Eksempel
 
-## Assembler Usage
+```asm
+    .INCLUDE "stdlib.asm"
 
-### Command Line
+    .ORG $8000
+START:
+    SET_AB #6       ; A=6, B=0
+    SET_CD #7       ; C=7, D=0
+    AB_MULT_CD      ; AB = 6 * 7 = 42
+    AB>OUT          ; Vis resultat paa 7-segment display
+    HALT
+```
 
 ```bash
-# Basic assembly (output: program.bin)
-uv run python -m sk02_asm program.asm
-
-# Specify output file
-uv run python -m sk02_asm program.asm -o output.bin
-
-# Generate Intel HEX format
-uv run python -m sk02_asm program.asm -f hex
-
-# Generate assembly listing
-uv run python -m sk02_asm program.asm -l program.lst
-
-# Set origin address
-uv run python -m sk02_asm program.asm --org 0x9000
-
-# Verbose output
-uv run python -m sk02_asm program.asm -v
+uv run sk02-asm multiply.asm -I lib -o multiply.bin
 ```
 
-### Python API
+---
 
-```python
-from sk02_asm import assemble_file
+## Simulator
 
-# Assemble a file
-success = assemble_file('program.asm', 'output.bin', format='bin')
+**Status: Fungerer.** Alle 210 opcodes implementeret (hardware-interrupts er stubbet som no-ops). Tre tilstande: batch, interaktiv tekst og TUI-debugger.
+
+### Batch-tilstand
+
+Koerer programmet og viser sluttilstand:
+
+```bash
+uv run python -m simulator program.bin --run
 ```
 
-## Assembly Syntax
+```
+Loaded 48 bytes from program.bin at $8000
+Starting execution...
+CPU halted
+Executed 230 instructions
 
-### Number Formats
-
-- Hexadecimal: `$FF` or `$1234`
-- Binary: `%10101010`
-- Decimal: `255` or `42`
-- Character: `'A'` (ASCII value)
-
-### Labels
-
-```asm
-START:              ; Global label
-    NOP
-.loop:              ; Local label (scoped to START)
-    A++
-    JMP .loop       ; Reference local label
+Final state:
+PC: $8030  RSP: 00  DSP: 00  Flags: Z=1 O=0 I=0
+A=$2A B=$00 C=$00 D=$00 E=$00 F=$00 G=$00 H=$00
+OUT_0: $2A
 ```
 
-### Instructions
+### Interaktiv debugger
 
-```asm
-; Implied addressing (1 byte)
-NOP
-A++
-HALT
-
-; 8-bit immediate (2 bytes)
-SET_A #$42
-SET_B #100
-
-; 16-bit immediate (3 bytes)
-SET_AB #$1234
-SET_CD #$5678
-
-; 16-bit address (3 bytes)
-LOAD_A $4000
-STORE_A $4001
-JMP START
-GOSUB SUBROUTINE
+```bash
+uv run python -m simulator program.bin
 ```
 
-### Directives
+Kommandoer: `step [n]`, `run`, `break <addr>`, `clear <addr>`, `regs`, `mem <addr> [len]`, `disasm <addr> [n]`, `set <reg> <val>`, `io`, `reset`, `help`, `quit`.
 
-```asm
-.ORG $8000          ; Set origin address (default: $8000)
-.EQU DELAY, $FF     ; Define constant
-.BYTE $00, $FF, 42  ; Define bytes
-.WORD $8000, START  ; Define 16-bit words (little-endian)
-.ASCII "HELLO"      ; ASCII string (no null terminator)
-.ASCIIZ "WORLD"     ; ASCII string with null terminator
+### TUI-debugger
+
+**Status: Ny, grundlaeggende funktionalitet paa plads.** Kraever `textual`.
+
+```bash
+uv run python -m simulator program.bin --tui
 ```
 
-## Instruction Set Summary
+Funktioner:
+- Disassembly-visning med PC-markering og breakpoints
+- Register-panel med aendringer fremhaevet i rodt
+- I/O-panel (OUT_0, OUT_1, GPIO, X, Y)
+- Stak-visning (top 8 entries)
+- Memory hex-viewer med inline redigering
+- F5 Run, F10 Step Over (springer over GOSUB), F11 Step Into, F9 Breakpoint
+- Ctrl+G Gaa til adresse, Ctrl+R Reset, Ctrl+L Indlaes fil
 
-### Data Movement (1 byte)
-- `0>A`, `1>A`, `FF>A` - Load constants into A
-- `A>B`, `B>A`, `C>D`, etc. - Register-to-register moves
-- `PUSH_A`, `POP_A`, `PUSH_B`, `POP_B` - Stack operations
+**Begraensninger:** Hardware-interrupts er ikke simuleret. Opcode-opslag genopbygges per instruktion i koeretiden (ydelsesproblem ved lange programmer).
 
-### Arithmetic (1 byte)
-- `A++`, `A--`, `B++`, `B--` - Increment/decrement
-- `ADD`, `SUB` - A = A + B, A = A - B
-- `ADD_c`, `SUB_c` - With carry
-- `AB++`, `AB--`, `CD++`, `CD--` - 16-bit increment/decrement
-- `AB+CD`, `AB-CD` - 16-bit arithmetic
+### Genvejsscript
 
-### Logical (1 byte)
-- `NOT`, `AND`, `OR`, `XOR`, `NAND`, `NOR`, `NXOR`
+```bash
+./sk02-sim program.bin --run     # Batch
+./sk02-sim program.bin           # Interaktiv
+./sk02-sim program.bin --tui     # TUI-debugger
+```
 
-### Shift (1 byte)
-- `A>>`, `A<<`, `B>>`, `B<<` - Logical shifts
-- `AB>>`, `AB<<` - 16-bit shifts
-- `S_A>>`, `S_B>>` - Arithmetic shifts (sign-preserving)
+---
 
-### Comparison (1 byte)
-- `CMP` - Compare A and B (sets flags)
-- `CMP_16` - Compare AB and CD (16-bit)
-- `A_ZERO`, `AB_ZERO` - Test for zero
+## C-compiler
 
-### Memory (3 bytes for absolute, 1 byte for register-indirect)
-- `LOAD_A addr`, `LOAD_B addr` - Load from memory
-- `STORE_A addr`, `STORE_B addr` - Store to memory
-- `LOAD_A_CD`, `LOAD_B_CD` - Load using CD as address pointer
-- `LOAD_A_EF`, `LOAD_A_GH` - Load using EF or GH as pointer
-- `LO_A_CD++`, `ST_A_CD++` - Auto-increment pointer versions
+**Status: Eksperimentel.** Grundlaeggende programmer virker (aritmetik, if/else, while, for), men mange C-features mangler eller er fejlbehaefiede. Ingen tests. Brug med forsigtighed.
 
-### Control Flow (3 bytes)
-- `JMP addr` - Unconditional jump
-- `JMP_ZERO addr`, `JMP_OVER addr` - Conditional jumps based on flags
-- `JMP_A_POS addr`, `JMP_A_EVEN addr` - Conditional jumps based on A
-- `GOSUB addr`, `RETURN` - Subroutine calls
-- `JMP_COMP`, `GOSUB_COMP` - Computed jumps (address in AB)
+Compileren oversaetter et C-subset til SK-02 assembly:
 
-### I/O (1 byte)
-- `A>OUT_0`, `A>OUT_1` - Output to 7-segment displays
-- `A>GPIO`, `GPIO>A` - General purpose I/O
-- `X>A`, `Y>A` - Read input devices
+```bash
+uv run sk02cc program.c -o program.asm
+```
 
-### System (1 byte, some 2-3 bytes)
-- `HALT` - Stop execution
-- `NOP` - No operation
-- `SET_IV #addr` - Set interrupt vector (3 bytes)
-- `TRG_HWI`, `CLEAR_HWI` - Hardware interrupt control
+### Hvad virker
 
-## Examples
+- Typer: `char` (8-bit), `int` (16-bit)
+- Operatorer: `+`, `-`, `&`, `|`, `^`, `<<`, `>>`, `==`, `!=`, `<`, `>`, `<=`, `>=`
+- Unaere: `-`, `!`, `~`, `++`, `--` (praefix og postfiks)
+- Kontrolflow: `if`/`else`, `while`, `for`, `break`, `continue`, `return`
+- Funktioner med op til 2 parametre (ikke-rekursive)
+- Globale variable
 
-See the `examples/` directory for sample programs:
-- `hello.asm` - Comprehensive example demonstrating various features
-- `simple.asm` - Simple counter program
+### Hvad mangler eller er i stykker
 
-## Architecture
+- **Ingen multiplikation/division/modulo** (`*`, `/`, `%`) -- compiler crasher
+- **Ingen logisk AND/OR** (`&&`, `||`) -- compiler crasher
+- **Ingen pointer-dereference eller address-of** (`*ptr`, `&var`) -- compiler crasher
+- **Ingen array-adgang** (`arr[i]`) -- compiler crasher
+- **Compound assignments er forkerte** (`+=`, `-=` etc.) -- compilerer stille og roligt forkert kode
+- **Sammenligningsoperatorer kan give forkerte resultater** for `<` og `>`
+- **Ingen rekursion** -- lokale variable bruger statisk lager
+- **Ingen C-praprocessor** (`#include`, `#define`)
+- **Ingen structs, unions, enums, do-while, switch/case**
 
-The SK-02 assembler uses a two-pass architecture:
+### Eksempel
 
-**Pass 1**: Build symbol table
-- Parse source code
-- Record label addresses
-- Calculate instruction sizes
-- Process .EQU directives
+```c
+void delay() {
+    int i = 1000;
+    while (i > 0) {
+        i = i - 1;
+    }
+}
 
-**Pass 2**: Generate machine code
-- Resolve label references
-- Generate opcodes and operands
-- Handle directives (.BYTE, .WORD, etc.)
-- Output binary or Intel HEX
+void main() {
+    char x = 42;
+    char y = 10;
+    char result = x + y;
+}
+```
 
-## License
+```bash
+uv run sk02cc program.c -o program.asm
+uv run sk02-asm program.asm -o program.bin
+uv run python -m simulator program.bin --run
+```
 
-See LICENSE file for details.
+Eller brug build-scriptet:
+
+```bash
+./sk02-build program.c
+```
+
+---
+
+## Standardbibliotek
+
+**Status: Porteret fra original Perl-assembler.** 16 makroer i `lib/stdlib.asm`. Bruges med `.INCLUDE "stdlib.asm"` og `-I lib`.
+
+| Makro | Beskrivelse |
+|---|---|
+| `INPUT_AB` | Laes X/Y-input til A/B, vis paa display, vent paa interrupt |
+| `WAIT_INTERUPT` | Vent paa hardware-interrupt |
+| `GETCHAR` | Hent numpad-input (4-bit) til A |
+| `INIT_DISPLAY` | Initialiser LCD-display |
+| `RESET_DISPLAY` | Ryd LCD-display |
+| `PRINT_BUFFER` | Udskriv null-termineret streng fra AB til LCD |
+| `ABX10` | Gang AB med 10 via shifts |
+| `AB_MULT_CD` | 16-bit multiplikation: AB = AB * CD |
+| `AB_DIV_CD` | 16-bit division: AB = AB / CD, rest i CD |
+| `MEMCOPY` | Kopier null-termineret streng fra AB til CD |
+| `MEMCOPY_APPEND` | Tilfoej streng til eksisterende buffer |
+| `MEMSET` | Udfyld hukommelse: AB=adresse, C=vaerdi, D=laengde |
+| `NUMBER_TO_BUFF` | 16-bit tal til 5-cifret decimal-streng |
+| `SHORT_TO_BUFF` | 8-bit tal til 3-cifret decimal-streng |
+| `INT_TO_BUFF_SIGN` | Signeret 16-bit til decimal med +/- fortegn |
+| `SHORT_TO_BUFF_SIGN` | Signeret 8-bit til decimal med +/- fortegn |
+
+**Bemærk:** Float-formateringsmakroer (`FLOAT_TO_BUFF`, `FLOAT_TO_BUFF_MANTISSA`, `NORMALISE_FLOAT`) er ogsaa inkluderet men udokumenterede her.
+
+---
+
+## Eksempler
+
+Assembly-eksempler i `examples/`:
+
+| Fil | Beskrivelse |
+|---|---|
+| `simple.asm` | Tael fra 0 til 10, vis paa OUT_0 |
+| `macros_test.asm` | 6*7 med `AB_MULT_CD` fra stdlib |
+| `nested_macros_test.asm` | Test af nestede makroer (`GETCHAR` kalder `WAIT_INTERUPT`) |
+| `comprehensive_test.asm` | Omfattende test: registre, aritmetik, logik, stak, hukommelse, subrutiner |
+| `directives.asm` | Test af assembler-direktiver |
+
+C-eksempler:
+
+| Fil | Beskrivelse |
+|---|---|
+| `hello.c` | LED-blinker med delay-funktion |
+| `arithmetic.c` | Aritmetik og bitwise operationer |
+| `loops.c` | For/while-loekker |
+| `conditionals.c` | If/else og sammenligninger |
+
+---
+
+## Test
+
+```bash
+uv run pytest tests/ -v
+```
+
+83 tests daekker assembleren (opcodes, labels, direktiver, makroer, preprocessor, symboler, lexer). Compileren og simulatoren har endnu ingen tests.
+
+---
+
+## Projektstruktur
+
+```
+sk02/
+  src/
+    sk02_asm/     -- Assembler (lexer, parser, preprocessor, codegen)
+    sk02cc/       -- C-compiler (lexer, parser, AST, codegen)
+  simulator/      -- CPU-simulator (cpu, memory, opcodes, text-ui, tui)
+  lib/            -- Standardbibliotek (stdlib.asm)
+  examples/       -- Eksempelprogrammer
+  tests/          -- Unit tests
+  docs/           -- Dokumentation
+  sk02-sim        -- Genvej til simulator
+  sk02-build      -- C-til-binaer build-script
+  bin2sim         -- Konverter .bin til simulator-tekstformat
+```
+
+## Licens
+
+Se LICENSE-filen for detaljer.

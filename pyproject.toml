@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "SK-02 8-bit Computer Assembler and C Compiler"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "textual>=8.2.2",
+]
 
 [project.scripts]
 sk02-asm = "sk02_asm.cli:main"
@@ -26,5 +28,6 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "pytest>=9.0.2",
     "ruff>=0.14.14",
 ]

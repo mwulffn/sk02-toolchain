@@ -188,35 +188,38 @@ class CodeGenerator:
             raise CodeGenError(f"Unsupported binary operator: {expr.op}")
 
     def generate_comparison(self, op: str) -> None:
-        """Generate comparison code."""
-        # A and B contain values to compare
-        self.emit("    CMP")  # Compare A and B (A = A - B, sets flags)
+        """Generate comparison code.
+
+        CMP sets flags without modifying A:
+        - overflow=true, zero=true:  A == B
+        - overflow=true, zero=false: A > B
+        - overflow=false:            A < B
+        """
+        self.emit("    CMP")  # Sets overflow and zero flags, A unchanged
         true_label = self.new_label("true")
         end_label = self.new_label("cmp_end")
 
         if op == "==":
-            # A == B if A - B == 0
             self.emit(f"    JMP_ZERO {true_label}")
         elif op == "!=":
-            # A != B if A - B != 0
-            self.emit(f"    JMP_ZERO {end_label}")  # Skip to false if zero
-            self.emit(f"    JMP {true_label}")  # Otherwise true
+            self.emit(f"    JMP_ZERO {end_label}")
+            self.emit(f"    JMP {true_label}")
         elif op == "<":
-            # A < B if A - B is negative (not positive and not zero)
-            self.emit(f"    JMP_ZERO {end_label}")  # If equal, false
-            self.emit(f"    JMP_A_POS {end_label}")  # If positive, false
-            self.emit(f"    JMP {true_label}")  # Otherwise (negative), true
+            # A < B: overflow not set
+            self.emit(f"    JMP_OVER {end_label}")  # A >= B, false
+            self.emit(f"    JMP {true_label}")
         elif op == ">":
-            # A > B if A - B is positive and non-zero
-            self.emit(f"    JMP_A_POS {true_label}")
+            # A > B: overflow set and zero not set
+            self.emit(f"    JMP_ZERO {end_label}")  # A == B, false
+            self.emit(f"    JMP_OVER {true_label}")  # A >= B (and not equal), true
         elif op == "<=":
-            # A <= B if A - B is not positive
-            self.emit(f"    JMP_A_POS {end_label}")  # If positive, false
-            self.emit(f"    JMP {true_label}")  # Otherwise (zero or negative), true
+            # A <= B: zero set or overflow not set
+            self.emit(f"    JMP_ZERO {true_label}")  # A == B, true
+            self.emit(f"    JMP_OVER {end_label}")  # A > B, false
+            self.emit(f"    JMP {true_label}")  # A < B, true
         elif op == ">=":
-            # A >= B if A - B is zero or positive
-            self.emit(f"    JMP_ZERO {true_label}")  # If zero, true
-            self.emit(f"    JMP_A_POS {true_label}")  # If positive, true
+            # A >= B: overflow set
+            self.emit(f"    JMP_OVER {true_label}")
         else:
             raise CodeGenError(f"Unknown comparison operator: {op}")
 
@@ -536,7 +539,11 @@ class CodeGenerator:
         # Parameters are passed in registers, so they're implicitly available
         for param in func.parameters:
             size = self.get_type_size(param.type)
-            self.local_vars[param.name] = {"type": param.type, "size": size, "is_param": True}
+            self.local_vars[param.name] = {
+                "type": param.type,
+                "size": size,
+                "is_param": True,
+            }
 
         # Function label
         self.emit("")
@@ -599,7 +606,9 @@ class CodeGenerator:
             self.emit_comment("String literals")
             for label, value in self.string_literals:
                 # Convert escape sequences
-                value = value.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+                value = (
+                    value.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+                )
                 self.emit(f"{label}:")
                 self.emit(f'    .ASCIIZ "{value}"')
 

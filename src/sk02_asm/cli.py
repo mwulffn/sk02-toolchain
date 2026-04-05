@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .assembler import assemble_file
+from .assembler import Assembler, assemble_file
 
 
 def main():
@@ -19,6 +19,7 @@ Examples:
   %(prog)s program.asm -f hex             # Output Intel HEX format
   %(prog)s program.asm -l program.lst     # Generate listing file
   %(prog)s program.asm --org 0x9000       # Set origin address
+  %(prog)s program.asm -I lib/            # Add include search path
         """,
     )
 
@@ -42,11 +43,27 @@ Examples:
     )
 
     parser.add_argument(
-        "-l", "--listing", type=str, default=None, help="Generate assembly listing file"
+        "-l",
+        "--listing",
+        type=str,
+        default=None,
+        help="Generate assembly listing file",
     )
 
     parser.add_argument(
-        "--org", type=str, default="0x8000", help="Origin address (default: 0x8000)"
+        "--org",
+        type=str,
+        default="0x8000",
+        help="Origin address (default: 0x8000)",
+    )
+
+    parser.add_argument(
+        "-I",
+        "--include",
+        type=str,
+        action="append",
+        default=[],
+        help="Add include search path (can be used multiple times)",
     )
 
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
@@ -71,21 +88,26 @@ Examples:
         print(f"Error: Input file not found: {args.input}", file=sys.stderr)
         sys.exit(1)
 
+    # Build include paths
+    include_paths = [Path(p) for p in args.include]
+
     # Assemble
     if args.verbose:
         print(f"Assembling {args.input}...")
         print(f"Origin: ${start_address:04X}")
         print(f"Format: {args.format}")
+        if include_paths:
+            print(f"Include paths: {', '.join(str(p) for p in include_paths)}")
 
-    success = assemble_file(args.input, args.output, args.format, start_address)
+    success = assemble_file(
+        args.input, args.output, args.format, start_address, include_paths
+    )
 
     # Generate listing if requested
     if args.listing and success:
-        from .assembler import Assembler
-
         with open(input_path, "r") as f:
             source = f.read()
-        assembler = Assembler(source, start_address)
+        assembler = Assembler(source, start_address, input_path, include_paths)
         output, _ = assembler.assemble()
         listing = output.get_listing()
         with open(args.listing, "w") as f:

@@ -3,6 +3,7 @@
 from .assembler import Assembler, assemble_file
 from .errors import AssemblyError
 from .opcodes import OPCODES, OperandType, get_opcode
+from .preprocessor import Preprocessor
 from .symbols import SymbolTable
 
 __version__ = "0.1.0"
@@ -14,5 +15,6 @@ __all__ = [
     "OPCODES",
     "get_opcode",
     "OperandType",
+    "Preprocessor",
     "SymbolTable",
 ]
