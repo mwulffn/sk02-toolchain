@@ -1217,3 +1217,785 @@ class TestStackPassedParams:
         """)
         result = cpu.A | (cpu.B << 8)
         assert result == 300, f"Expected 300, got {result}"
+
+
+# ===========================================================================
+# Pointers: address-of, dereference read, dereference write
+# ===========================================================================
+
+
+class TestPointerAddressOf:
+    """Address-of operator (&var) must emit the variable's static address."""
+
+    def test_address_of_local_asm(self):
+        """&x should emit SET_AB #_main_x."""
+        lines = asm_lines("void main() { char x; char* p = &x; }")
+        assert any("SET_AB #_main_x" in l for l in lines)
+
+    def test_address_of_global_asm(self):
+        """&g for global should use global label."""
+        lines = asm_lines("char g; void main() { char* p = &g; }")
+        assert any("SET_AB #_g" in l for l in lines)
+
+
+class TestPointerDereference:
+    """Dereference operator (*ptr) must read the value at the pointed-to address."""
+
+    def test_deref_read_char(self):
+        """*ptr should return the byte stored at the address."""
+        cpu = run_c("""
+            char main() {
+                char x = 42;
+                char* p = &x;
+                return *p;
+            }
+        """)
+        assert cpu.A == 42, f"Expected 42, got {cpu.A}"
+
+    def test_deref_read_after_modify(self):
+        """*ptr must reflect the current value of the variable, not the initial one."""
+        cpu = run_c("""
+            char main() {
+                char x = 10;
+                char* p = &x;
+                x = 77;
+                return *p;
+            }
+        """)
+        assert cpu.A == 77, f"Expected 77, got {cpu.A}"
+
+    def test_deref_read_int(self):
+        """*ptr for int pointer should read the 16-bit value."""
+        cpu = run_c("""
+            int main() {
+                int x = 1000;
+                int* p = &x;
+                return *p;
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 1000, f"Expected 1000, got {result}"
+
+
+class TestPointerDerefWrite:
+    """Assigning through a dereferenced pointer must store to the pointed-to address."""
+
+    def test_deref_write_char(self):
+        """*ptr = val should store byte at the pointed-to address."""
+        cpu = run_c("""
+            char main() {
+                char x = 0;
+                char* p = &x;
+                *p = 77;
+                return x;
+            }
+        """)
+        assert cpu.A == 77, f"Expected 77, got {cpu.A}"
+
+    def test_deref_write_int(self):
+        """*ptr = val for int pointer should store 16-bit value."""
+        cpu = run_c("""
+            int main() {
+                int x = 0;
+                int* p = &x;
+                *p = 1000;
+                return x;
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 1000, f"Expected 1000, got {result}"
+
+    def test_deref_write_preserves_other_vars(self):
+        """Writing through pointer must not corrupt adjacent variables."""
+        cpu = run_c("""
+            char main() {
+                char a = 11;
+                char x = 0;
+                char b = 22;
+                char* p = &x;
+                *p = 99;
+                return a + b;
+            }
+        """)
+        assert cpu.A == 33, f"Expected 33, got {cpu.A}"
+
+    def test_deref_write_rhs_is_deref_sum(self):
+        """*dest = *a + *b must read both sources and write result correctly."""
+        cpu = run_c("""
+            char main() {
+                char a = 10;
+                char b = 32;
+                char dest = 0;
+                char* pa = &a;
+                char* pb = &b;
+                char* pd = &dest;
+                *pd = *pa + *pb;
+                return dest;
+            }
+        """)
+        assert cpu.A == 42, f"Expected 42, got {cpu.A}"
+
+    def test_deref_read_modify_write(self):
+        """*p = *p + 1 must increment the value at the pointed-to address."""
+        cpu = run_c("""
+            char main() {
+                char x = 41;
+                char* p = &x;
+                *p = *p + 1;
+                return x;
+            }
+        """)
+        assert cpu.A == 42, f"Expected 42, got {cpu.A}"
+
+    def test_deref_in_if_condition(self):
+        """*p used as an if condition must branch correctly."""
+        cpu = run_c("""
+            char main() {
+                char x = 1;
+                char* p = &x;
+                if (*p) {
+                    return 10;
+                }
+                return 20;
+            }
+        """)
+        assert cpu.A == 10, f"Expected 10, got {cpu.A}"
+
+    def test_deref_in_while_condition(self):
+        """Loop controlled by *p must iterate the correct number of times."""
+        cpu = run_c("""
+            char main() {
+                char count = 3;
+                char sum = 0;
+                char* p = &count;
+                while (*p) {
+                    sum = sum + 1;
+                    count = count - 1;
+                }
+                return sum;
+            }
+        """)
+        assert cpu.A == 3, f"Expected 3, got {cpu.A}"
+
+    def test_global_pointer_runtime(self):
+        """Global pointer to global variable must dereference correctly at runtime."""
+        cpu = run_c("""
+            char g;
+            char main() {
+                g = 5;
+                char* p = &g;
+                return *p;
+            }
+        """)
+        assert cpu.A == 5, f"Expected 5, got {cpu.A}"
+
+    def test_pointer_as_function_param(self):
+        """Passing &x to a function that writes *p should mutate x."""
+        cpu = run_c("""
+            void set(char* p, char val) { *p = val; }
+            char main() {
+                char x = 0;
+                set(&x, 42);
+                return x;
+            }
+        """)
+        assert cpu.A == 42, f"Expected 42, got {cpu.A}"
+
+    def test_double_deref(self):
+        """**pp must read through two levels of indirection."""
+        cpu = run_c("""
+            char main() {
+                char x = 7;
+                char* p = &x;
+                char** pp = &p;
+                return **pp;
+            }
+        """)
+        assert cpu.A == 7, f"Expected 7, got {cpu.A}"
+
+
+# ===========================================================================
+# BUG: 16-bit binary + and - use 8-bit ADD/SUB instead of AB+CD / AB-CD
+#
+# int + int must use AB+CD; int - int must use AB-CD.
+# With only 8-bit ADD/SUB the high byte is silently discarded.
+# ===========================================================================
+
+
+class TestInt16Arithmetic:
+    """16-bit (int / uint16) add and subtract must handle values > 255."""
+
+    def test_int_add_no_carry(self):
+        """int 100 + 200 = 300 (fits in low byte, sanity check)."""
+        cpu = run_c("""
+            int main() {
+                int a = 100;
+                int b = 200;
+                return a + b;
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 300, f"100 + 200 should be 300, got {result}"
+
+    def test_int_add_with_carry(self):
+        """int 200 + 200 = 400 — result crosses 256 boundary."""
+        cpu = run_c("""
+            int main() {
+                int a = 200;
+                int b = 200;
+                return a + b;
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 400, f"200 + 200 should be 400, got {result} (A={cpu.A} B={cpu.B})"
+
+    def test_int_add_large_values(self):
+        """int 500 + 300 = 800 — both operands > 255."""
+        cpu = run_c("""
+            int main() {
+                int a = 500;
+                int b = 300;
+                return a + b;
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 800, f"500 + 300 should be 800, got {result} (A={cpu.A} B={cpu.B})"
+
+    def test_int_sub_no_borrow(self):
+        """int 500 - 300 = 200."""
+        cpu = run_c("""
+            int main() {
+                int a = 500;
+                int b = 300;
+                return a - b;
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 200, f"500 - 300 should be 200, got {result}"
+
+    def test_int_sub_with_borrow(self):
+        """int 300 - 200 = 100 — crosses 256 boundary."""
+        cpu = run_c("""
+            int main() {
+                int a = 300;
+                int b = 200;
+                return a - b;
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 100, f"300 - 200 should be 100, got {result}"
+
+    def test_int_add_emits_ab_plus_cd(self):
+        """int + int must emit AB+CD, not ADD."""
+        lines = asm_lines("""
+            int main() {
+                int a = 1;
+                int b = 2;
+                return a + b;
+            }
+        """)
+        assert "AB+CD" in lines, "int + int should emit AB+CD"
+        assert "ADD" not in lines, "int + int must not use 8-bit ADD"
+
+    def test_int_sub_emits_ab_minus_cd(self):
+        """int - int must emit AB-CD, not SUB."""
+        lines = asm_lines("""
+            int main() {
+                int a = 3;
+                int b = 2;
+                return a - b;
+            }
+        """)
+        assert "AB-CD" in lines, "int - int should emit AB-CD"
+        assert "SUB" not in lines, "int - int must not use 8-bit SUB"
+
+
+# ===========================================================================
+# BUG: 16-bit comparisons only compare the low byte
+#
+# The binary-op pattern uses PUSH_A / POP_A which only preserves A (low byte).
+# High byte is lost. CMP_16 is never emitted.
+# ===========================================================================
+
+
+class TestInt16Comparisons:
+    """16-bit comparisons must use CMP_16 and compare full 16-bit values."""
+
+    def test_uint16_eq_same_low_byte_different_high(self):
+        """256 == 512 must be false (same low byte 0x00, different high bytes)."""
+        cpu = run_c("""
+            char main() {
+                uint16 a = 256;
+                uint16 b = 512;
+                if (a == b) return 1;
+                return 0;
+            }
+        """)
+        assert cpu.A == 0, f"256 == 512 should be false, got {cpu.A}"
+
+    def test_uint16_neq_same_low_byte_different_high(self):
+        """256 != 512 must be true."""
+        cpu = run_c("""
+            char main() {
+                uint16 a = 256;
+                uint16 b = 512;
+                if (a != b) return 1;
+                return 0;
+            }
+        """)
+        assert cpu.A == 1, f"256 != 512 should be true, got {cpu.A}"
+
+    def test_uint16_lt_high_byte_matters(self):
+        """256 < 512 must be true (only high bytes differ)."""
+        cpu = run_c("""
+            char main() {
+                uint16 a = 256;
+                uint16 b = 512;
+                if (a < b) return 1;
+                return 0;
+            }
+        """)
+        assert cpu.A == 1, f"256 < 512 should be true, got {cpu.A}"
+
+    def test_uint16_gt_high_byte_matters(self):
+        """512 > 256 must be true."""
+        cpu = run_c("""
+            char main() {
+                uint16 a = 512;
+                uint16 b = 256;
+                if (a > b) return 1;
+                return 0;
+            }
+        """)
+        assert cpu.A == 1, f"512 > 256 should be true, got {cpu.A}"
+
+    def test_uint16_lte_equal_large_values(self):
+        """1000 <= 1000 must be true."""
+        cpu = run_c("""
+            char main() {
+                uint16 a = 1000;
+                uint16 b = 1000;
+                if (a <= b) return 1;
+                return 0;
+            }
+        """)
+        assert cpu.A == 1, f"1000 <= 1000 should be true, got {cpu.A}"
+
+    def test_uint16_gte_large_values(self):
+        """1000 >= 500 must be true."""
+        cpu = run_c("""
+            char main() {
+                uint16 a = 1000;
+                uint16 b = 500;
+                if (a >= b) return 1;
+                return 0;
+            }
+        """)
+        assert cpu.A == 1, f"1000 >= 500 should be true, got {cpu.A}"
+
+    def test_int16_eq_emits_cmp_16(self):
+        """int == int must emit CMP_16."""
+        lines = asm_lines("""
+            char main() {
+                int a = 1;
+                int b = 1;
+                if (a == b) return 1;
+                return 0;
+            }
+        """)
+        assert "CMP_16" in lines, "int == int should emit CMP_16"
+
+
+# ===========================================================================
+# BUG: right shift always uses logical A>>, never arithmetic S_A>> / S_AB>>
+#
+# Spec: int8 >> uses S_A>> (sign-extending); uint8 >> uses A>> (logical).
+# ===========================================================================
+
+
+class TestArithmeticRightShift:
+    """Signed right shift must preserve the sign bit."""
+
+    def test_int8_right_shift_negative(self):
+        """-4 >> 1 should give -2 (arithmetic shift preserves sign)."""
+        cpu = run_c("""
+            int8 main() {
+                int8 x = -4;
+                return x >> 1;
+            }
+        """)
+        # -2 is 0xFE = 254 in unsigned
+        assert cpu.A == 0xFE, f"-4 >> 1 should be -2 (0xFE), got {cpu.A:#04x}"
+
+    def test_int8_right_shift_positive_unchanged(self):
+        """8 >> 1 = 4 even for int8 (positive, so same as logical)."""
+        cpu = run_c("""
+            int8 main() {
+                int8 x = 8;
+                return x >> 1;
+            }
+        """)
+        assert cpu.A == 4, f"8 >> 1 should be 4, got {cpu.A}"
+
+    def test_int8_right_shift_emits_s_a(self):
+        """int8 >> must emit S_A>> (arithmetic shift), not A>> (logical)."""
+        lines = asm_lines("""
+            int8 main(int8 x) {
+                return x >> 1;
+            }
+        """)
+        assert "S_A>>" in lines, "int8 >> should emit S_A>>"
+        assert "A>>" not in lines, "int8 >> must not emit logical A>>"
+
+    def test_uint8_right_shift_logical(self):
+        """uint8 >> should still be logical (A>>), not arithmetic."""
+        cpu = run_c("""
+            char main() {
+                char x = 128;
+                return x >> 1;
+            }
+        """)
+        assert cpu.A == 64, f"128 >> 1 (logical) should be 64, got {cpu.A}"
+
+    def test_uint8_right_shift_emits_a(self):
+        """uint8 >> must emit logical A>>, not S_A>>."""
+        lines = asm_lines("""
+            char main(char x) {
+                return x >> 1;
+            }
+        """)
+        assert "A>>" in lines, "char >> should emit A>>"
+
+
+# ===========================================================================
+# Untested operators: ~ (bitwise NOT), ! (logical NOT)
+# ===========================================================================
+
+
+class TestBitwiseNot:
+    """~ operator must invert all bits."""
+
+    def test_bitwise_not_zero(self):
+        """~0 = 0xFF = 255."""
+        cpu = run_c("""
+            char main() {
+                char x = 0;
+                return ~x;
+            }
+        """)
+        assert cpu.A == 0xFF, f"~0 should be 0xFF, got {cpu.A:#04x}"
+
+    def test_bitwise_not_ff(self):
+        """~0xFF = 0."""
+        cpu = run_c("""
+            char main() {
+                char x = 255;
+                return ~x;
+            }
+        """)
+        assert cpu.A == 0, f"~0xFF should be 0, got {cpu.A}"
+
+    def test_bitwise_not_nibble(self):
+        """~0x0F = 0xF0."""
+        cpu = run_c("""
+            char main() {
+                char x = 15;
+                return ~x;
+            }
+        """)
+        assert cpu.A == 0xF0, f"~0x0F should be 0xF0, got {cpu.A:#04x}"
+
+    def test_bitwise_not_emits_not(self):
+        """~ must emit NOT instruction."""
+        lines = asm_lines("""
+            char main(char x) {
+                return ~x;
+            }
+        """)
+        assert "NOT" in lines, "~ should emit NOT"
+
+
+class TestLogicalNot:
+    """! operator must return 0 or 1."""
+
+    def test_not_nonzero_returns_zero(self):
+        """!5 = 0."""
+        cpu = run_c("""
+            char main() {
+                char x = 5;
+                return !x;
+            }
+        """)
+        assert cpu.A == 0, f"!5 should be 0, got {cpu.A}"
+
+    def test_not_zero_returns_one(self):
+        """!0 = 1."""
+        cpu = run_c("""
+            char main() {
+                char x = 0;
+                return !x;
+            }
+        """)
+        assert cpu.A == 1, f"!0 should be 1, got {cpu.A}"
+
+    def test_not_one_returns_zero(self):
+        """!1 = 0."""
+        cpu = run_c("""
+            char main() {
+                char x = 1;
+                return !x;
+            }
+        """)
+        assert cpu.A == 0, f"!1 should be 0, got {cpu.A}"
+
+    def test_not_in_condition(self):
+        """if (!x) must branch correctly when x = 0."""
+        cpu = run_c("""
+            char main() {
+                char x = 0;
+                if (!x) return 42;
+                return 0;
+            }
+        """)
+        assert cpu.A == 42, f"if (!0) should take branch, got {cpu.A}"
+
+    def test_not_normalizes(self):
+        """!255 = 0, !0 = 1 (result always 0 or 1, not bitwise complement)."""
+        cpu = run_c("""
+            char main() {
+                char x = 255;
+                return !x;
+            }
+        """)
+        assert cpu.A == 0, f"!255 should be 0, got {cpu.A}"
+
+
+# ===========================================================================
+# Untested: >> (logical right shift for uint8/char)
+# ===========================================================================
+
+
+class TestRightShift:
+    """Logical right shift for unsigned types."""
+
+    def test_right_shift_by_1(self):
+        """8 >> 1 = 4."""
+        cpu = run_c("""
+            char main() {
+                char x = 8;
+                return x >> 1;
+            }
+        """)
+        assert cpu.A == 4, f"8 >> 1 should be 4, got {cpu.A}"
+
+    def test_right_shift_by_3(self):
+        """40 >> 3 = 5."""
+        cpu = run_c("""
+            char main() {
+                char x = 40;
+                return x >> 3;
+            }
+        """)
+        assert cpu.A == 5, f"40 >> 3 should be 5, got {cpu.A}"
+
+    def test_right_shift_zero_by_n(self):
+        """0 >> 4 = 0."""
+        cpu = run_c("""
+            char main() {
+                char x = 0;
+                return x >> 4;
+            }
+        """)
+        assert cpu.A == 0, f"0 >> 4 should be 0, got {cpu.A}"
+
+    def test_right_shift_by_zero(self):
+        """x >> 0 = x unchanged."""
+        cpu = run_c("""
+            char main() {
+                char x = 42;
+                return x >> 0;
+            }
+        """)
+        assert cpu.A == 42, f"42 >> 0 should be 42, got {cpu.A}"
+
+    def test_right_shift_high_bit_cleared(self):
+        """128 >> 1 = 64 (logical: high bit cleared, not sign-extended)."""
+        cpu = run_c("""
+            char main() {
+                char x = 128;
+                return x >> 1;
+            }
+        """)
+        assert cpu.A == 64, f"128 >> 1 (logical) should be 64, got {cpu.A}"
+
+
+# ===========================================================================
+# Untested: character literals ('A', '\n', etc.)
+# ===========================================================================
+
+
+class TestCharLiterals:
+    """Character literals must produce their ASCII value."""
+
+    def test_char_literal_letter(self):
+        """'A' = 65."""
+        cpu = run_c("""
+            char main() {
+                return 'A';
+            }
+        """)
+        assert cpu.A == 65, f"'A' should be 65, got {cpu.A}"
+
+    def test_char_literal_zero(self):
+        """'\\0' = 0."""
+        cpu = run_c(r"""
+            char main() {
+                return '\0';
+            }
+        """)
+        assert cpu.A == 0, f"'\\0' should be 0, got {cpu.A}"
+
+    def test_char_literal_newline(self):
+        """'\\n' = 10."""
+        cpu = run_c(r"""
+            char main() {
+                return '\n';
+            }
+        """)
+        assert cpu.A == 10, f"'\\n' should be 10, got {cpu.A}"
+
+    def test_char_literal_in_variable(self):
+        """char x = 'Z'; return x;"""
+        cpu = run_c("""
+            char main() {
+                char x = 'Z';
+                return x;
+            }
+        """)
+        assert cpu.A == 90, f"'Z' should be 90, got {cpu.A}"
+
+    def test_char_literal_in_comparison(self):
+        """x == 'A' works as comparison."""
+        cpu = run_c("""
+            char main(char x) {
+                if (x == 'A') return 1;
+                return 0;
+            }
+        """, A=65)
+        assert cpu.A == 1, f"65 == 'A' should be true, got {cpu.A}"
+
+
+# ===========================================================================
+# Untested: global zero-initialization
+# ===========================================================================
+
+
+class TestGlobalInit:
+    """Global variables must be zero-initialized."""
+
+    def test_global_byte_zero_initialized(self):
+        """A global char not explicitly set must read as 0."""
+        cpu = run_c("""
+            char g;
+            char main() {
+                return g;
+            }
+        """)
+        assert cpu.A == 0, f"Uninitialized global should be 0, got {cpu.A}"
+
+    def test_global_word_zero_initialized(self):
+        """A global int not explicitly set must read as 0."""
+        cpu = run_c("""
+            int g;
+            char main() {
+                if (g == 0) return 1;
+                return 0;
+            }
+        """)
+        assert cpu.A == 1, f"Uninitialized global int should be 0, got {cpu.A}"
+
+    def test_global_emits_byte_zero(self):
+        """Global char must emit .BYTE 0 in data section."""
+        lines = asm_lines("""
+            char g;
+            char main() { return g; }
+        """)
+        assert ".BYTE 0" in lines, "Global char should emit .BYTE 0"
+
+    def test_global_emits_word_zero(self):
+        """Global int must emit .WORD 0 in data section."""
+        lines = asm_lines("""
+            int g;
+            char main() { return 0; }
+        """)
+        assert ".WORD 0" in lines, "Global int should emit .WORD 0"
+
+
+# ===========================================================================
+# Undertested: break in for loop, continue in while loop
+# ===========================================================================
+
+
+class TestBreakContinueVariants:
+    """break and continue must work in all loop types."""
+
+    def test_break_in_for_loop(self):
+        """break must exit a for loop early."""
+        cpu = run_c("""
+            char main() {
+                char i;
+                for (i = 0; i < 10; i++) {
+                    if (i == 5) break;
+                }
+                return i;
+            }
+        """)
+        assert cpu.A == 5, f"break at i==5 should leave i=5, got {cpu.A}"
+
+    def test_continue_in_while_loop(self):
+        """continue must skip rest of while loop body."""
+        cpu = run_c("""
+            char main() {
+                char i = 0;
+                char sum = 0;
+                while (i < 10) {
+                    i++;
+                    if (i == 5) continue;
+                    sum++;
+                }
+                return sum;
+            }
+        """)
+        # Counts 1..10 but skips increment when i==5, so 9 increments
+        assert cpu.A == 9, f"continue should skip one iteration, got {cpu.A}"
+
+
+# ===========================================================================
+# BUG-4: <<= and >>= compound assignment cannot be lexed/parsed
+# ===========================================================================
+
+
+class TestShiftAssign:
+    """<<= and >>= compound assignment operators."""
+
+    def test_left_shift_assign(self):
+        """x <<= 2 should multiply x by 4."""
+        cpu = run_c("""
+            char main() {
+                char x = 3;
+                x <<= 2;
+                return x;
+            }
+        """)
+        assert cpu.A == 12, f"3 <<= 2 should give 12, got {cpu.A}"
+
+    def test_right_shift_assign(self):
+        """x >>= 1 should halve x."""
+        cpu = run_c("""
+            char main() {
+                char x = 20;
+                x >>= 1;
+                return x;
+            }
+        """)
+        assert cpu.A == 10, f"20 >>= 1 should give 10, got {cpu.A}"

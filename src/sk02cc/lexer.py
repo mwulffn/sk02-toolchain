@@ -226,13 +226,29 @@ class Lexer:
                 self.advance()
                 self.advance()
             elif ch == "<" and self.peek_char() == "<":
-                self.tokens.append(Token(TokenType.LSHIFT, "<<", start_line, start_col))
-                self.advance()
-                self.advance()
+                self.advance()  # past first <
+                self.advance()  # past second <; now current_char() is the char after <<
+                if self.current_char() == "=":
+                    self.tokens.append(
+                        Token(TokenType.LSHIFT_ASSIGN, "<<=", start_line, start_col)
+                    )
+                    self.advance()  # past =
+                else:
+                    self.tokens.append(
+                        Token(TokenType.LSHIFT, "<<", start_line, start_col)
+                    )
             elif ch == ">" and self.peek_char() == ">":
-                self.tokens.append(Token(TokenType.RSHIFT, ">>", start_line, start_col))
-                self.advance()
-                self.advance()
+                self.advance()  # past first >
+                self.advance()  # past second >; now current_char() is the char after >>
+                if self.current_char() == "=":
+                    self.tokens.append(
+                        Token(TokenType.RSHIFT_ASSIGN, ">>=", start_line, start_col)
+                    )
+                    self.advance()  # past =
+                else:
+                    self.tokens.append(
+                        Token(TokenType.RSHIFT, ">>", start_line, start_col)
+                    )
             elif ch == "&" and self.peek_char() == "&":
                 self.tokens.append(Token(TokenType.LAND, "&&", start_line, start_col))
                 self.advance()

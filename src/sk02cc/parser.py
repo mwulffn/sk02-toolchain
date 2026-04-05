@@ -229,6 +229,8 @@ class Parser:
             TokenType.AND_ASSIGN,
             TokenType.OR_ASSIGN,
             TokenType.XOR_ASSIGN,
+            TokenType.LSHIFT_ASSIGN,
+            TokenType.RSHIFT_ASSIGN,
         ):
             op_token = self.advance()
             value = self.parse_assignment_expression()

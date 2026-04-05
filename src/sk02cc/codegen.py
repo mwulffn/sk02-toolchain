@@ -147,25 +147,45 @@ class CodeGenerator:
             self.generate_logical_op(expr)
             return
 
-        # Evaluate left into A, save it, evaluate right into A, move to B, restore left.
-        # NumberLiteral and CharLiteral honour result_reg="B" and emit SET_B directly.
-        # All other expression types ignore result_reg and always produce result in A,
-        # so we emit A>B afterwards to move the RHS into B before POP_A restores the LHS.
+        # Evaluate left operand; result is in A (8-bit) or AB (16-bit).
         self.last_expr_type = None
         self.generate_expression(expr.left, "A")
         left_type = self.last_expr_type
-        self.emit("    PUSH_A")
+        is_16bit = left_type is not None and self.is_16bit_type(left_type)
+
+        if is_16bit:
+            # Preserve both bytes of the 16-bit left operand.
+            self.emit("    PUSH_A")  # push low byte
+            self.emit("    PUSH_B")  # push high byte
+        else:
+            self.emit("    PUSH_A")
+
+        # Evaluate right operand; result is in A (8-bit) or AB (16-bit).
         self.last_expr_type = None
         self.generate_expression(expr.right, "B")
         right_type = self.last_expr_type
-        if not isinstance(expr.right, (NumberLiteral, CharLiteral)):
-            self.emit("    A>B")
-        self.emit("    POP_A")
+
+        if is_16bit:
+            # Move right operand from AB to CD; restore left into AB.
+            self.emit("    AB>CD")
+            self.emit("    POP_B")  # restore left's high byte
+            self.emit("    POP_A")  # restore left's low byte
+        else:
+            # For 8-bit: move RHS from A to B (unless it was already there).
+            if not isinstance(expr.right, (NumberLiteral, CharLiteral)):
+                self.emit("    A>B")
+            self.emit("    POP_A")
 
         if expr.op == "+":
-            self.emit("    ADD")  # A = A + B
+            if is_16bit:
+                self.emit("    AB+CD")  # AB = AB + CD
+            else:
+                self.emit("    ADD")  # A = A + B
         elif expr.op == "-":
-            self.emit("    SUB")  # A = A - B
+            if is_16bit:
+                self.emit("    AB-CD")  # AB = AB - CD
+            else:
+                self.emit("    SUB")  # A = A - B
         elif expr.op == "&":
             self.emit("    AND")
         elif expr.op == "|":
@@ -173,8 +193,7 @@ class CodeGenerator:
         elif expr.op == "^":
             self.emit("    XOR")
         elif expr.op == "<<":
-            # Simple left shift - shift A by B times
-            # Save A, use loop with B count
+            # Shift A (or AB) left by B times using a loop.
             loop_label = self.new_label("shift_left")
             end_label = self.new_label("shift_end")
             self.emit("    PUSH_A")  # Save value to shift
@@ -191,7 +210,10 @@ class CodeGenerator:
             self.emit(f"{end_label}:")
             self.emit("    POP_A")  # Final result
         elif expr.op == ">>":
-            # Simple right shift
+            # Shift A right by B times. Use arithmetic (sign-extending) shift
+            # for signed types, logical shift for unsigned types.
+            is_signed_shift = left_type is not None and self.is_signed_type(left_type)
+            shift_instr = "S_A>>" if is_signed_shift else "A>>"
             loop_label = self.new_label("shift_right")
             end_label = self.new_label("shift_end")
             self.emit("    PUSH_A")  # Save value to shift
@@ -201,7 +223,7 @@ class CodeGenerator:
             self.emit(f"    JMP_ZERO {end_label}")
             self.emit("    A>B")  # Move back
             self.emit("    POP_A")  # Get value
-            self.emit("    A>>")
+            self.emit(f"    {shift_instr}")
             self.emit("    PUSH_A")  # Save shifted value
             self.emit("    B--")
             self.emit(f"    JMP {loop_label}")
@@ -212,9 +234,9 @@ class CodeGenerator:
                 right_type is not None and self.is_signed_type(right_type)
             )
             if is_signed and expr.op in ("<", ">", "<=", ">="):
-                self.generate_signed_comparison(expr.op)
+                self.generate_signed_comparison(expr.op, is_16bit=is_16bit)
             else:
-                self.generate_comparison(expr.op)
+                self.generate_comparison(expr.op, is_16bit=is_16bit)
         elif expr.op == "*":
             # After setup: A=left, B=right. Need AB=(left,0), CD=(right,0).
             self.emit("    PUSH_A")  # save left
@@ -281,12 +303,14 @@ class CodeGenerator:
 
         self.emit(f"{end_label}:")
 
-    def generate_comparison(self, op: str) -> None:
+    def generate_comparison(self, op: str, is_16bit: bool = False) -> None:
         """Generate comparison code.
 
-        CMP sets flags without modifying A:
+        CMP / CMP_16 sets flags without modifying registers:
           overflow = (A - B) < 0  →  overflow is SET when A < B (unsigned)
           zero     = (A - B) == 0 →  zero is SET when A == B
+
+        For 16-bit, CMP_16 compares AB vs CD using the same flag semantics.
 
         Derived conditions:
           A <  B  →  overflow set,   zero clear
@@ -295,7 +319,7 @@ class CodeGenerator:
           A >= B  →  overflow clear  (zero may or may not be set)
           A <= B  →  overflow set OR zero set
         """
-        self.emit("    CMP")
+        self.emit("    CMP_16" if is_16bit else "    CMP")
         false_label = self.new_label("false")
         true_label = self.new_label("true")
         end_label = self.new_label("cmp_end")
@@ -338,60 +362,72 @@ class CodeGenerator:
 
         self.emit(f"{end_label}:")
 
-    def generate_signed_comparison(self, op: str) -> None:
-        """Generate signed comparison using JMP_A_POS/JMP_B_POS for sign detection.
+    def generate_signed_comparison(self, op: str, is_16bit: bool = False) -> None:
+        """Generate signed comparison using sign-bit checks before CMP/CMP_16.
 
-        A = left operand, B = right operand (set up by caller).
+        8-bit:  A = left,  B = right.  Sign bit in A's MSB / B's MSB.
+        16-bit: AB = left, CD = right. Sign bit in B's MSB (high byte of AB)
+                                       / D's MSB (high byte of CD).
 
         Algorithm:
-          1. If A's MSB is clear (A non-negative) jump to a_pos.
-          2. A is negative: if B's MSB is clear (B positive), signs differ → A < B.
-             Otherwise both negative → fall through to unsigned CMP (same-sign path).
-          3. At a_pos: if B's MSB is clear (B positive) too → same-sign path.
-             Otherwise A positive, B negative → A > B.
-          4. Same-sign path: unsigned CMP gives correct result (ordering is preserved).
-
-        Note: for 16-bit (int/int16) this checks the low byte's MSB. This is correct
-        when the low byte's sign bit reflects the value's sign (e.g. 0xFFFF vs 0x0001),
-        which covers the common cases tested here.
+          1. Check sign of left operand.
+             8-bit: JMP_A_POS; 16-bit: JMP_B_POS
+          2. Left is negative: check right.
+             8-bit: JMP_B_POS; 16-bit: copy D to A, JMP_A_POS
+          3. If different signs → result is determined (neg < pos).
+          4. If same sign → CMP/CMP_16 gives correct unsigned ordering.
         """
         a_pos = self.new_label("sgn_a_pos")
-        diff_a_neg = self.new_label("sgn_diff_a_neg")  # A neg, B pos: A < B
-        diff_a_pos = self.new_label("sgn_diff_a_pos")  # A pos, B neg: A > B
+        diff_a_neg = self.new_label("sgn_diff_a_neg")  # left neg, right pos: left < right
+        diff_a_pos = self.new_label("sgn_diff_a_pos")  # left pos, right neg: left > right
         same_sign = self.new_label("sgn_same")
         true_label = self.new_label("sgn_true")
         false_label = self.new_label("sgn_false")
         end_label = self.new_label("sgn_end")
 
-        # Check sign of left (A)
-        self.emit(f"    JMP_A_POS {a_pos}")
-        # A negative: check B
-        self.emit(f"    JMP_B_POS {diff_a_neg}")  # B positive → A < B
-        self.emit(f"    JMP {same_sign}")  # both negative
+        if is_16bit:
+            # Sign of left is B's MSB (high byte of AB).
+            # Sign of right is D's MSB (high byte of CD) — copy D→A to test.
+            self.emit(f"    JMP_B_POS {a_pos}")          # left non-negative
+            # Left negative: check right's high byte
+            self.emit("    D>A")
+            self.emit(f"    JMP_A_POS {diff_a_neg}")     # right positive → left < right
+            self.emit(f"    JMP {same_sign}")             # both negative
 
-        self.emit(f"{a_pos}:")
-        # A non-negative: check B
-        self.emit(f"    JMP_B_POS {same_sign}")  # both positive
-        # A positive, B negative: A > B
-        self.emit(f"    JMP {diff_a_pos}")
+            self.emit(f"{a_pos}:")
+            # Left non-negative: check right's high byte
+            self.emit("    D>A")
+            self.emit(f"    JMP_A_POS {same_sign}")      # both positive
+            self.emit(f"    JMP {diff_a_pos}")            # left pos, right neg
+        else:
+            # 8-bit: sign of left is A's MSB, sign of right is B's MSB.
+            self.emit(f"    JMP_A_POS {a_pos}")
+            # A negative: check B
+            self.emit(f"    JMP_B_POS {diff_a_neg}")     # B positive → A < B
+            self.emit(f"    JMP {same_sign}")             # both negative
 
-        # A < B case (A neg, B pos)
+            self.emit(f"{a_pos}:")
+            # A non-negative: check B
+            self.emit(f"    JMP_B_POS {same_sign}")      # both positive
+            self.emit(f"    JMP {diff_a_pos}")
+
+        # Left < right case (left neg, right pos)
         self.emit(f"{diff_a_neg}:")
         if op in ("<", "<="):
             self.emit(f"    JMP {true_label}")
         else:
             self.emit(f"    JMP {false_label}")
 
-        # A > B case (A pos, B neg)
+        # Left > right case (left pos, right neg)
         self.emit(f"{diff_a_pos}:")
         if op in (">", ">="):
             self.emit(f"    JMP {true_label}")
         else:
             self.emit(f"    JMP {false_label}")
 
-        # Same-sign: unsigned CMP gives correct signed ordering
+        # Same-sign: CMP/CMP_16 gives correct signed ordering
         self.emit(f"{same_sign}:")
-        self.emit("    CMP")
+        self.emit("    CMP_16" if is_16bit else "    CMP")
         if op == "<":
             self.emit(f"    JMP_OVER {true_label}")
             self.emit(f"    JMP {false_label}")
@@ -547,11 +583,69 @@ class CodeGenerator:
                     raise CodeGenError(f"Undefined variable: {var_name}")
             else:
                 raise CodeGenError("-- only supported for variables")
+        elif expr.op == "&":
+            # Address-of: produce the variable's static address in AB
+            if not isinstance(expr.operand, Identifier):
+                raise CodeGenError("Address-of requires a variable")
+            name = expr.operand.name
+            if name in self.local_vars:
+                var_info = self.local_vars[name]
+                label = f"_{self.current_function}_{name}"
+            elif name in self.globals:
+                var_info = self.globals[name]
+                label = f"_{name}"
+            else:
+                raise CodeGenError(f"Undefined variable: {name}")
+            self.emit(f"    SET_AB #{label}")
+            self.last_expr_type = PointerType(
+                base_type=var_info["type"], line=expr.line, column=expr.column
+            )
+
+        elif expr.op == "*":
+            # Dereference: load value at the address held in the pointer
+            self.generate_expression(expr.operand, "A")
+            ptr_type = self.last_expr_type
+            if not isinstance(ptr_type, PointerType):
+                raise CodeGenError("Dereference of non-pointer type")
+            pointee_type = ptr_type.base_type
+            self.emit("    AB>CD")
+            if self.is_8bit_type(pointee_type):
+                self.emit("    LOAD_A_CD")
+            else:
+                self.emit("    LO_AB_CD")
+            self.last_expr_type = pointee_type
+
         else:
             raise CodeGenError(f"Unsupported unary operator: {expr.op}")
 
+    def _generate_deref_assignment(self, expr: Assignment) -> None:
+        """Generate assignment through a dereferenced pointer (*ptr = value)."""
+        if expr.op != "=":
+            raise CodeGenError("Compound assignment through pointer not yet supported")
+        # Evaluate pointer expression — address lands in AB
+        self.generate_expression(expr.target.operand, "A")
+        ptr_type = self.last_expr_type
+        if not isinstance(ptr_type, PointerType):
+            raise CodeGenError("Dereference of non-pointer type")
+        pointee_type = ptr_type.base_type
+        # Park pointer address in GH while we evaluate the RHS.
+        # GH is not used by any expression evaluation code paths, so it is safe.
+        self.emit("    AB>GH")
+        if self.is_8bit_type(pointee_type):
+            self.generate_expression(expr.value, "A")
+            self.emit("    STORE_A_GH")
+        else:
+            self.generate_expression(expr.value, "AB")
+            self.emit("    STORE_A_GH")
+            self.emit("    GH++")
+            self.emit("    STORE_B_GH")
+        self.last_expr_type = pointee_type
+
     def generate_assignment(self, expr: Assignment) -> None:
         """Generate assignment code."""
+        if isinstance(expr.target, UnaryOp) and expr.target.op == "*":
+            self._generate_deref_assignment(expr)
+            return
         if not isinstance(expr.target, Identifier):
             raise CodeGenError("Complex lvalues not yet supported")
 
@@ -631,11 +725,15 @@ class CodeGenerator:
                             self.emit("    C>A")
                         self.needs_divide = True
                 elif expr.op in ("<<=", ">>="):
-                    # Shift: value in A, count in B
-                    self.emit("    A>B")  # count (RHS) already in B... wait
-                    # Actually after A>B: B=RHS, A=LHS (from POP_A)
-                    # We need shift count in B and value in A — that's correct
-                    shift_op = "A<<" if expr.op == "<<=" else "A>>"
+                    # After A>B / POP_A above: A=LHS (value), B=RHS (count).
+                    # Shift loop needs value in A and count in B — already correct.
+                    is_signed_shift = self.is_signed_type(var_info["type"])
+                    if expr.op == "<<=":
+                        shift_op = "A<<"
+                    elif is_signed_shift:
+                        shift_op = "S_A>>"
+                    else:
+                        shift_op = "A>>"
                     # Generate a shift loop (reuse binary op shift logic)
                     loop_label = self.new_label(
                         "shift_left" if expr.op == "<<=" else "shift_right"
@@ -690,12 +788,30 @@ class CodeGenerator:
                     self.emit("    PUSH_A")
 
         # Load params 1-2 into registers
-        if len(expr.arguments) >= 1:
-            self.generate_expression(expr.arguments[0], "A")
-        if len(expr.arguments) >= 2:
-            self.emit("    PUSH_A")
-            self.generate_expression(expr.arguments[1], "B")
-            self.emit("    POP_A")
+        param1_type = func_params[0].type if func_params else None
+        param1_is_16bit = param1_type and (
+            self.is_16bit_type(param1_type) or self.is_pointer_type(param1_type)
+        )
+        if len(expr.arguments) >= 2 and param1_is_16bit:
+            param2_type = func_params[1].type if len(func_params) > 1 else None
+            if param2_type and self.is_8bit_type(param2_type):
+                # Conflict: param 1 occupies AB, param 2 needs B.
+                # Evaluate param 2 first and park it in C, then load param 1 into AB.
+                self.generate_expression(expr.arguments[1], "A")
+                self.emit("    A>C")
+                self.generate_expression(expr.arguments[0], "A")
+            else:
+                self.generate_expression(expr.arguments[0], "A")
+                self.emit("    PUSH_A")
+                self.generate_expression(expr.arguments[1], "B")
+                self.emit("    POP_A")
+        else:
+            if len(expr.arguments) >= 1:
+                self.generate_expression(expr.arguments[0], "A")
+            if len(expr.arguments) >= 2:
+                self.emit("    PUSH_A")
+                self.generate_expression(expr.arguments[1], "B")
+                self.emit("    POP_A")
 
         # Call function
         self.emit(f"    GOSUB _{expr.function}")
@@ -858,8 +974,14 @@ class CodeGenerator:
 
         if len(func.parameters) >= 2:
             param = func.parameters[1]
+            param0_is_16bit = not self.is_8bit_type(func.parameters[0].type)
             if self.is_8bit_type(param.type):
-                self.emit(f"    STORE_B _{func.name}_{param.name}")
+                if param0_is_16bit:
+                    # Param 1 occupied AB; caller parked param 2 in C to avoid conflict
+                    self.emit("    C>A")
+                    self.emit(f"    STORE_A _{func.name}_{param.name}")
+                else:
+                    self.emit(f"    STORE_B _{func.name}_{param.name}")
             else:
                 # Save CD to parameter location via EF pointer
                 self.emit(f"    CD>AB")  # Move CD to AB

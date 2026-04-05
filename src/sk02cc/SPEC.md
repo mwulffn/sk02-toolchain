@@ -143,7 +143,7 @@ CMP. Cost: ~4–6 extra instructions per comparison.
 | Position | 8-bit param  | 16-bit param | Notes                          |
 |----------|--------------|--------------|--------------------------------|
 | Param 1  | Register A   | Register AB  |                                |
-| Param 2  | Register B   | Register CD  |                                |
+| Param 2  | Register B   | Register CD  | See note below when param 1 is 16-bit |
 | Param 3+ | Data stack   | Data stack   | Pushed by caller, low byte first|
 | Return   | Register A   | Register AB  |                                |
 
@@ -153,6 +153,11 @@ CMP. Cost: ~4–6 extra instructions per comparison.
   saves live values to stack before calls
 - GOSUB/RETURN used for all calls; GOSUB_COMP available for function pointers (Tier 2)
 
+**Register C workaround:** When param 1 is 16-bit (AB) and param 2 is 8-bit, they conflict on
+register B (high byte of param 1). In this case the compiler uses register C for param 2:
+caller evaluates param 2 first → A, then `A>C`, then loads param 1 into AB; callee reads
+param 2 from C via `C>A` + `STORE_A`.
+
 ### Constraints
 - No recursion (static locals)
 - No variadic functions
@@ -161,13 +166,29 @@ CMP. Cost: ~4–6 extra instructions per comparison.
 
 ---
 
-## Pointers (Tier 2)
+## Pointers
 
-- All pointers are `uint16` addresses (2 bytes)
-- Dereference `*ptr`: load address into CD/EF/GH, use `LOAD_A_CD` / `LO_AB_CD`
-- Address-of `&var`: emit `SET_AB #label`
-- Pointer arithmetic: `ptr + n` adds n×sizeof(T) to the 16-bit address via AB+CD
-- No `NULL` safety — behaviour on null/invalid pointer is undefined
+All pointers are `uint16` addresses (2 bytes), stored in static storage like any 16-bit variable.
+
+### Implemented
+
+- **`&var`** — emits `SET_AB #label`; works for both locals (`_{func}_{var}`) and globals (`_{var}`)
+- **`*ptr` read** — evaluates pointer into AB, `AB>CD`, then `LOAD_A_CD` (8-bit pointee) or
+  `LO_AB_CD` (16-bit pointee)
+- **`*ptr = val` write** — pointer parked in GH via `AB>GH` while RHS is evaluated (GH is
+  unused by expression evaluation); then `STORE_A_GH` (8-bit) or `STORE_A_GH` + `GH++` +
+  `STORE_B_GH` (16-bit)
+- **Double dereference `**pp`** — works via recursive evaluation; `last_expr_type` cascades
+  through each dereference level
+- **Pointer as function parameter** — treated as 16-bit (AB or CD); register C workaround
+  applies when a 16-bit pointer is param 1 and an 8-bit value is param 2
+- **No `NULL` safety** — behaviour on null/invalid pointer is undefined
+
+### Not yet implemented
+
+- Pointer arithmetic (`ptr + n` must scale by `sizeof(*ptr)`)
+- Compound assignment through pointers (`*ptr += 5`)
+- Array subscript as pointer dereference (`arr[i]` = `*(arr + i)`)
 
 ---
 
@@ -220,7 +241,7 @@ for correct instruction sequences, or end-to-end via the simulator).
 
 - ~~Software multiply/divide/modulo~~ ✓ Done — `__rt_mul` / `__rt_div` subroutines, emitted only when used
 - ~~Logical `&&` / `||`~~ ✓ Done — short-circuit evaluation
-- Pointers and address-of (partial)
+- ~~Pointers and address-of~~ ✓ Done — `&var` emits `SET_AB #label`; `*ptr` read via `AB>CD` + `LOAD_A_CD`/`LO_AB_CD`; `*ptr = val` write via `AB>GH` + `STORE_A_GH`/`STORE_B_GH`
 - Array access
 - `do`/`while`, `switch`/`case`
 - ~~More than 2 function parameters (stack-passed)~~ ✓ Done — params 3+ pushed right-to-left by caller, popped in order by callee
