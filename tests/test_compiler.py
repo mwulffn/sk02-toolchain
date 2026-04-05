@@ -10,6 +10,7 @@ Two helpers are provided:
 
 import pytest
 from sk02cc.compiler import compile_string
+from sk02cc.type_checker import SemanticError
 from sk02_asm.assembler import Assembler
 from simulator.cpu import CPU
 from simulator.memory import Memory
@@ -1999,3 +2000,50 @@ class TestShiftAssign:
             }
         """)
         assert cpu.A == 10, f"20 >>= 1 should give 10, got {cpu.A}"
+
+
+# ---------------------------------------------------------------------------
+# Semantic analysis error tests
+# ---------------------------------------------------------------------------
+
+
+class TestSemanticErrors:
+    """The type checker should catch errors early with clear messages."""
+
+    def test_undefined_variable(self):
+        """Referencing an undeclared variable raises SemanticError."""
+        with pytest.raises(SemanticError, match="Undefined variable: x"):
+            compile_string("""
+                char main() {
+                    return x;
+                }
+            """)
+
+    def test_undefined_function(self):
+        """Calling an undeclared function raises SemanticError."""
+        with pytest.raises(SemanticError, match="undeclared function: foo"):
+            compile_string("""
+                char main() {
+                    return foo(1);
+                }
+            """)
+
+    def test_wrong_argument_count(self):
+        """Passing wrong number of args raises SemanticError."""
+        with pytest.raises(SemanticError, match="expects 1 argument"):
+            compile_string("""
+                char add(char a) { return a; }
+                char main() {
+                    return add(1, 2);
+                }
+            """)
+
+    def test_deref_non_pointer(self):
+        """Dereferencing a non-pointer raises SemanticError."""
+        with pytest.raises(SemanticError, match="non-pointer"):
+            compile_string("""
+                char main() {
+                    char x = 5;
+                    return *x;
+                }
+            """)

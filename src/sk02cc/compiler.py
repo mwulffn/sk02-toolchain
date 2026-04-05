@@ -5,6 +5,7 @@ from pathlib import Path
 from .codegen import CodeGenerator
 from .lexer import Lexer
 from .parser import Parser
+from .type_checker import TypeChecker
 
 
 def compile_string(source: str) -> str:
@@ -28,6 +29,9 @@ def compile_string(source: str) -> str:
     # Parse
     parser = Parser(tokens)
     ast = parser.parse_program()
+
+    # Semantic analysis: annotate AST nodes with resolved types
+    TypeChecker().check(ast)
 
     # Generate code
     codegen = CodeGenerator()

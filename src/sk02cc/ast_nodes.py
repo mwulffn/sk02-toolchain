@@ -1,6 +1,6 @@
 """Abstract Syntax Tree node definitions for SK02-C."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -45,6 +45,7 @@ class NumberLiteral:
     value: int
     line: int
     column: int
+    resolved_type: Optional["Type"] = field(default=None, compare=False)
 
 
 @dataclass
@@ -54,6 +55,7 @@ class CharLiteral:
     value: str  # The character
     line: int
     column: int
+    resolved_type: Optional["Type"] = field(default=None, compare=False)
 
 
 @dataclass
@@ -63,6 +65,7 @@ class StringLiteral:
     value: str
     line: int
     column: int
+    resolved_type: Optional["Type"] = field(default=None, compare=False)
 
 
 @dataclass
@@ -72,6 +75,7 @@ class Identifier:
     name: str
     line: int
     column: int
+    resolved_type: Optional["Type"] = field(default=None, compare=False)
 
 
 @dataclass
@@ -83,6 +87,7 @@ class BinaryOp:
     right: "Expression"
     line: int
     column: int
+    resolved_type: Optional["Type"] = field(default=None, compare=False)
 
 
 @dataclass
@@ -94,6 +99,7 @@ class UnaryOp:
     postfix: bool  # True for postfix ++/--
     line: int
     column: int
+    resolved_type: Optional["Type"] = field(default=None, compare=False)
 
 
 @dataclass
@@ -105,6 +111,7 @@ class Assignment:
     value: "Expression"
     line: int
     column: int
+    resolved_type: Optional["Type"] = field(default=None, compare=False)
 
 
 @dataclass
@@ -115,6 +122,7 @@ class FunctionCall:
     arguments: list["Expression"]
     line: int
     column: int
+    resolved_type: Optional["Type"] = field(default=None, compare=False)
 
 
 @dataclass
@@ -125,6 +133,7 @@ class ArrayAccess:
     index: "Expression"
     line: int
     column: int
+    resolved_type: Optional["Type"] = field(default=None, compare=False)
 
 
 # Type alias for expressions

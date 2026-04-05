@@ -2,6 +2,52 @@
 
 from .tokens import KEYWORDS, Token, TokenType
 
+# Operator table: longest match first to ensure greedy tokenization.
+# Each entry is (literal, TokenType).
+_OPERATORS: list[tuple[str, TokenType]] = [
+    ("<<=", TokenType.LSHIFT_ASSIGN),
+    (">>=", TokenType.RSHIFT_ASSIGN),
+    ("++",  TokenType.INC),
+    ("--",  TokenType.DEC),
+    ("==",  TokenType.EQ),
+    ("!=",  TokenType.NE),
+    ("<=",  TokenType.LE),
+    (">=",  TokenType.GE),
+    ("<<",  TokenType.LSHIFT),
+    (">>",  TokenType.RSHIFT),
+    ("&&",  TokenType.LAND),
+    ("||",  TokenType.LOR),
+    ("+=",  TokenType.PLUS_ASSIGN),
+    ("-=",  TokenType.MINUS_ASSIGN),
+    ("*=",  TokenType.STAR_ASSIGN),
+    ("/=",  TokenType.SLASH_ASSIGN),
+    ("%=",  TokenType.PERCENT_ASSIGN),
+    ("&=",  TokenType.AND_ASSIGN),
+    ("|=",  TokenType.OR_ASSIGN),
+    ("^=",  TokenType.XOR_ASSIGN),
+    ("+",   TokenType.PLUS),
+    ("-",   TokenType.MINUS),
+    ("*",   TokenType.STAR),
+    ("/",   TokenType.SLASH),
+    ("%",   TokenType.PERCENT),
+    ("&",   TokenType.AMPERSAND),
+    ("|",   TokenType.PIPE),
+    ("^",   TokenType.CARET),
+    ("~",   TokenType.TILDE),
+    ("!",   TokenType.LNOT),
+    ("=",   TokenType.ASSIGN),
+    ("<",   TokenType.LT),
+    (">",   TokenType.GT),
+    ("(",   TokenType.LPAREN),
+    (")",   TokenType.RPAREN),
+    ("{",   TokenType.LBRACE),
+    ("}",   TokenType.RBRACE),
+    ("[",   TokenType.LBRACKET),
+    ("]",   TokenType.RBRACKET),
+    (";",   TokenType.SEMICOLON),
+    (",",   TokenType.COMMA),
+]
+
 
 class LexerError(Exception):
     """Lexer error exception."""
@@ -70,26 +116,19 @@ class Lexer:
         """Read numeric literal."""
         start_line = self.line
         start_col = self.column
-        num_str = ""
+        start_pos = self.pos
 
         # Handle hex numbers (0x...)
         if self.current_char() == "0" and self.peek_char() in "xX":
-            num_str += self.current_char()
-            self.advance()
-            num_str += self.current_char()
-            self.advance()
-            while (
-                self.current_char() and self.current_char() in "0123456789abcdefABCDEF"
-            ):
-                num_str += self.current_char()
+            self.advance()  # skip 0
+            self.advance()  # skip x/X
+            while self.current_char() and self.current_char() in "0123456789abcdefABCDEF":
                 self.advance()
         else:
-            # Decimal number
             while self.current_char() and self.current_char().isdigit():
-                num_str += self.current_char()
                 self.advance()
 
-        return Token(TokenType.NUMBER, num_str, start_line, start_col)
+        return Token(TokenType.NUMBER, self.source[start_pos:self.pos], start_line, start_col)
 
     def read_char_literal(self) -> Token:
         """Read character literal like 'A'."""
@@ -148,15 +187,14 @@ class Lexer:
         """Read identifier or keyword."""
         start_line = self.line
         start_col = self.column
-        ident = ""
+        start_pos = self.pos
 
         while self.current_char() and (
             self.current_char().isalnum() or self.current_char() == "_"
         ):
-            ident += self.current_char()
             self.advance()
 
-        # Check if it's a keyword
+        ident = self.source[start_pos:self.pos]
         token_type = KEYWORDS.get(ident, TokenType.IDENTIFIER)
         return Token(token_type, ident, start_line, start_col)
 
@@ -200,193 +238,19 @@ class Lexer:
             elif ch.isalpha() or ch == "_":
                 self.tokens.append(self.read_identifier())
 
-            # Two-character operators
-            elif ch == "+" and self.peek_char() == "+":
-                self.tokens.append(Token(TokenType.INC, "++", start_line, start_col))
-                self.advance()
-                self.advance()
-            elif ch == "-" and self.peek_char() == "-":
-                self.tokens.append(Token(TokenType.DEC, "--", start_line, start_col))
-                self.advance()
-                self.advance()
-            elif ch == "=" and self.peek_char() == "=":
-                self.tokens.append(Token(TokenType.EQ, "==", start_line, start_col))
-                self.advance()
-                self.advance()
-            elif ch == "!" and self.peek_char() == "=":
-                self.tokens.append(Token(TokenType.NE, "!=", start_line, start_col))
-                self.advance()
-                self.advance()
-            elif ch == "<" and self.peek_char() == "=":
-                self.tokens.append(Token(TokenType.LE, "<=", start_line, start_col))
-                self.advance()
-                self.advance()
-            elif ch == ">" and self.peek_char() == "=":
-                self.tokens.append(Token(TokenType.GE, ">=", start_line, start_col))
-                self.advance()
-                self.advance()
-            elif ch == "<" and self.peek_char() == "<":
-                self.advance()  # past first <
-                self.advance()  # past second <; now current_char() is the char after <<
-                if self.current_char() == "=":
-                    self.tokens.append(
-                        Token(TokenType.LSHIFT_ASSIGN, "<<=", start_line, start_col)
-                    )
-                    self.advance()  # past =
-                else:
-                    self.tokens.append(
-                        Token(TokenType.LSHIFT, "<<", start_line, start_col)
-                    )
-            elif ch == ">" and self.peek_char() == ">":
-                self.advance()  # past first >
-                self.advance()  # past second >; now current_char() is the char after >>
-                if self.current_char() == "=":
-                    self.tokens.append(
-                        Token(TokenType.RSHIFT_ASSIGN, ">>=", start_line, start_col)
-                    )
-                    self.advance()  # past =
-                else:
-                    self.tokens.append(
-                        Token(TokenType.RSHIFT, ">>", start_line, start_col)
-                    )
-            elif ch == "&" and self.peek_char() == "&":
-                self.tokens.append(Token(TokenType.LAND, "&&", start_line, start_col))
-                self.advance()
-                self.advance()
-            elif ch == "|" and self.peek_char() == "|":
-                self.tokens.append(Token(TokenType.LOR, "||", start_line, start_col))
-                self.advance()
-                self.advance()
-            elif ch == "+" and self.peek_char() == "=":
-                self.tokens.append(
-                    Token(TokenType.PLUS_ASSIGN, "+=", start_line, start_col)
-                )
-                self.advance()
-                self.advance()
-            elif ch == "-" and self.peek_char() == "=":
-                self.tokens.append(
-                    Token(TokenType.MINUS_ASSIGN, "-=", start_line, start_col)
-                )
-                self.advance()
-                self.advance()
-            elif ch == "&" and self.peek_char() == "=":
-                self.tokens.append(
-                    Token(TokenType.AND_ASSIGN, "&=", start_line, start_col)
-                )
-                self.advance()
-                self.advance()
-            elif ch == "|" and self.peek_char() == "=":
-                self.tokens.append(
-                    Token(TokenType.OR_ASSIGN, "|=", start_line, start_col)
-                )
-                self.advance()
-                self.advance()
-            elif ch == "^" and self.peek_char() == "=":
-                self.tokens.append(
-                    Token(TokenType.XOR_ASSIGN, "^=", start_line, start_col)
-                )
-                self.advance()
-                self.advance()
-
-            # Single-character tokens
-            elif ch == "+":
-                self.tokens.append(Token(TokenType.PLUS, "+", start_line, start_col))
-                self.advance()
-            elif ch == "-":
-                self.tokens.append(Token(TokenType.MINUS, "-", start_line, start_col))
-                self.advance()
-            elif ch == "*":
-                self.advance()
-                if self.pos < len(self.source) and self.source[self.pos] == "=":
-                    self.tokens.append(
-                        Token(TokenType.STAR_ASSIGN, "*=", start_line, start_col)
-                    )
-                    self.advance()
-                else:
-                    self.tokens.append(
-                        Token(TokenType.STAR, "*", start_line, start_col)
-                    )
-            elif ch == "/":
-                self.advance()
-                if self.pos < len(self.source) and self.source[self.pos] == "=":
-                    self.tokens.append(
-                        Token(TokenType.SLASH_ASSIGN, "/=", start_line, start_col)
-                    )
-                    self.advance()
-                else:
-                    self.tokens.append(
-                        Token(TokenType.SLASH, "/", start_line, start_col)
-                    )
-            elif ch == "%":
-                self.advance()
-                if self.pos < len(self.source) and self.source[self.pos] == "=":
-                    self.tokens.append(
-                        Token(TokenType.PERCENT_ASSIGN, "%=", start_line, start_col)
-                    )
-                    self.advance()
-                else:
-                    self.tokens.append(
-                        Token(TokenType.PERCENT, "%", start_line, start_col)
-                    )
-            elif ch == "&":
-                self.tokens.append(
-                    Token(TokenType.AMPERSAND, "&", start_line, start_col)
-                )
-                self.advance()
-            elif ch == "|":
-                self.tokens.append(Token(TokenType.PIPE, "|", start_line, start_col))
-                self.advance()
-            elif ch == "^":
-                self.tokens.append(Token(TokenType.CARET, "^", start_line, start_col))
-                self.advance()
-            elif ch == "~":
-                self.tokens.append(Token(TokenType.TILDE, "~", start_line, start_col))
-                self.advance()
-            elif ch == "!":
-                self.tokens.append(Token(TokenType.LNOT, "!", start_line, start_col))
-                self.advance()
-            elif ch == "=":
-                self.tokens.append(Token(TokenType.ASSIGN, "=", start_line, start_col))
-                self.advance()
-            elif ch == "<":
-                self.tokens.append(Token(TokenType.LT, "<", start_line, start_col))
-                self.advance()
-            elif ch == ">":
-                self.tokens.append(Token(TokenType.GT, ">", start_line, start_col))
-                self.advance()
-            elif ch == "(":
-                self.tokens.append(Token(TokenType.LPAREN, "(", start_line, start_col))
-                self.advance()
-            elif ch == ")":
-                self.tokens.append(Token(TokenType.RPAREN, ")", start_line, start_col))
-                self.advance()
-            elif ch == "{":
-                self.tokens.append(Token(TokenType.LBRACE, "{", start_line, start_col))
-                self.advance()
-            elif ch == "}":
-                self.tokens.append(Token(TokenType.RBRACE, "}", start_line, start_col))
-                self.advance()
-            elif ch == "[":
-                self.tokens.append(
-                    Token(TokenType.LBRACKET, "[", start_line, start_col)
-                )
-                self.advance()
-            elif ch == "]":
-                self.tokens.append(
-                    Token(TokenType.RBRACKET, "]", start_line, start_col)
-                )
-                self.advance()
-            elif ch == ";":
-                self.tokens.append(
-                    Token(TokenType.SEMICOLON, ";", start_line, start_col)
-                )
-                self.advance()
-            elif ch == ",":
-                self.tokens.append(Token(TokenType.COMMA, ",", start_line, start_col))
-                self.advance()
-
+            # Operators: try longest match first via the table.
             else:
-                raise LexerError(f"Unexpected character: {ch!r}", start_line, start_col)
+                matched = False
+                for op_str, op_type in _OPERATORS:
+                    end = self.pos + len(op_str)
+                    if self.source[self.pos:end] == op_str:
+                        self.tokens.append(Token(op_type, op_str, start_line, start_col))
+                        for _ in op_str:
+                            self.advance()
+                        matched = True
+                        break
+                if not matched:
+                    raise LexerError(f"Unexpected character: {ch!r}", start_line, start_col)
 
         # Add EOF token
         self.tokens.append(Token(TokenType.EOF, "", self.line, self.column))

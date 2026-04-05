@@ -1,45 +1,46 @@
 """Code generator for SK02-C compiler."""
 
 from .ast_nodes import *
-
-
-class CodeGenError(Exception):
-    """Code generation error."""
-
-    pass
+from .calling_convention import CallingConvention
+from .codegen_errors import CodeGenError
+from .emitter import Emitter
+from .symbol_table import SymbolTable
 
 
 class CodeGenerator:
     """Generate SK-02 assembly from AST."""
 
     def __init__(self):
-        self.output = []
-        self.label_counter = 0
+        self._em = Emitter()
+        self._syms = SymbolTable()
+        self._cc = CallingConvention(
+            self._em, self.generate_expression, self._syms.function_signatures
+        )
         self.string_literals = []
-        self.globals = {}
-        self.current_function = None
-        self.local_vars = {}
-        self.all_local_vars = {}  # func_name -> {var_name -> info}
         self.break_labels = []
         self.continue_labels = []
-        self.last_expr_type = None  # type of last Identifier expression evaluated
         self.needs_multiply = False  # emit __rt_mul subroutine if True
         self.needs_divide = False  # emit __rt_div subroutine if True
-        self.function_signatures: dict = {}  # func_name -> list[Parameter]
 
-    def new_label(self, prefix: str = "L") -> str:
-        """Generate a unique label."""
-        label = f".{prefix}{self.label_counter}"
-        self.label_counter += 1
-        return label
+    # ------------------------------------------------------------------
+    # Convenience delegates
+    # ------------------------------------------------------------------
 
     def emit(self, line: str) -> None:
-        """Emit a line of assembly."""
-        self.output.append(line)
+        self._em.emit(line)
 
     def emit_comment(self, comment: str) -> None:
-        """Emit a comment."""
-        self.emit(f"; {comment}")
+        self._em.emit_comment(comment)
+
+    def new_label(self, prefix: str = "L") -> str:
+        return self._em.new_label(prefix)
+
+    def resolve_var(self, name: str) -> tuple[str, dict]:
+        return self._syms.resolve_var(name)
+
+    # ------------------------------------------------------------------
+    # Type helpers
+    # ------------------------------------------------------------------
 
     def get_type_size(self, typ: Type) -> int:
         """Get size of type in bytes."""
@@ -60,22 +61,21 @@ class CodeGenerator:
         raise CodeGenError(f"Unknown type size: {typ}")
 
     def is_8bit_type(self, typ: Type) -> bool:
-        """Check if type is 8-bit (char, uint8, int8)."""
         return isinstance(typ, BasicType) and typ.name in ("char", "uint8", "int8")
 
     def is_16bit_type(self, typ: Type) -> bool:
-        """Check if type is 16-bit (int, uint16, int16)."""
         return isinstance(typ, BasicType) and typ.name in ("int", "uint16", "int16")
 
     def is_signed_type(self, typ: Type) -> bool:
-        """Check if type is signed (int8, int16, int)."""
         return isinstance(typ, BasicType) and typ.name in ("int8", "int16", "int")
 
     def is_pointer_type(self, typ: Type) -> bool:
-        """Check if type is pointer."""
         return isinstance(typ, PointerType)
 
+    # ------------------------------------------------------------------
     # Expression code generation
+    # ------------------------------------------------------------------
+
     def generate_expression(self, expr: Expression, result_reg: str = "A") -> None:
         """Generate code for expression, result in specified register."""
         if isinstance(expr, NumberLiteral):
@@ -96,27 +96,13 @@ class CodeGenerator:
             self.emit(f"    SET_{result_reg} #{value}")
 
         elif isinstance(expr, Identifier):
-            # Load variable
-            if expr.name in self.local_vars:
-                var_info = self.local_vars[expr.name]
-                self.last_expr_type = var_info["type"]
-                if var_info["size"] == 1:
-                    self.emit(f"    LOAD_A _{self.current_function}_{expr.name}")
-                else:
-                    # Load 16-bit value via CD pointer
-                    self.emit(f"    SET_CD #_{self.current_function}_{expr.name}")
-                    self.emit(f"    LO_AB_CD")
-            elif expr.name in self.globals:
-                var_info = self.globals[expr.name]
-                self.last_expr_type = var_info["type"]
-                if var_info["size"] == 1:
-                    self.emit(f"    LOAD_A _{expr.name}")
-                else:
-                    # Load 16-bit value via CD pointer
-                    self.emit(f"    SET_CD #_{expr.name}")
-                    self.emit(f"    LO_AB_CD")
+            label, var_info = self.resolve_var(expr.name)
+            if var_info["size"] == 1:
+                self.emit(f"    LOAD_A {label}")
             else:
-                raise CodeGenError(f"Undefined variable: {expr.name}")
+                # Load 16-bit value via CD pointer
+                self.emit(f"    SET_CD #{label}")
+                self.emit(f"    LO_AB_CD")
 
         elif isinstance(expr, BinaryOp):
             self.generate_binary_op(expr)
@@ -128,7 +114,7 @@ class CodeGenerator:
             self.generate_assignment(expr)
 
         elif isinstance(expr, FunctionCall):
-            self.generate_function_call(expr)
+            self._cc.emit_call(expr)
 
         elif isinstance(expr, StringLiteral):
             # Add to string literals and generate reference
@@ -148,9 +134,8 @@ class CodeGenerator:
             return
 
         # Evaluate left operand; result is in A (8-bit) or AB (16-bit).
-        self.last_expr_type = None
         self.generate_expression(expr.left, "A")
-        left_type = self.last_expr_type
+        left_type = expr.left.resolved_type
         is_16bit = left_type is not None and self.is_16bit_type(left_type)
 
         if is_16bit:
@@ -161,9 +146,8 @@ class CodeGenerator:
             self.emit("    PUSH_A")
 
         # Evaluate right operand; result is in A (8-bit) or AB (16-bit).
-        self.last_expr_type = None
         self.generate_expression(expr.right, "B")
-        right_type = self.last_expr_type
+        right_type = expr.right.resolved_type
 
         if is_16bit:
             # Move right operand from AB to CD; restore left into AB.
@@ -452,6 +436,36 @@ class CodeGenerator:
 
         self.emit(f"{end_label}:")
 
+    def _generate_inc_dec(
+        self, label: str, size: int, is_increment: bool, postfix: bool
+    ) -> None:
+        """Emit increment or decrement for a variable at the given label.
+
+        Works for both 8-bit (size=1) and 16-bit (size=2) variables and
+        supports prefix and postfix semantics.  Result left in A (8-bit)
+        or AB (16-bit).
+        """
+        if size == 1:
+            self.emit(f"    LOAD_A {label}")
+            if postfix:
+                self.emit("    PUSH_A")
+            self.emit("    A++" if is_increment else "    A--")
+            self.emit(f"    STORE_A {label}")
+            if postfix:
+                self.emit("    POP_A")
+        else:
+            self.emit(f"    SET_CD #{label}")
+            self.emit("    LO_AB_CD")
+            if postfix:
+                self.emit("    PUSH_A")
+                self.emit("    PUSH_B")
+            self.emit("    AB++" if is_increment else "    AB--")
+            self.emit(f"    SET_CD #{label}")
+            self.emit("    ST_AB_CD")
+            if postfix:
+                self.emit("    POP_B")
+                self.emit("    POP_A")
+
     def generate_unary_op(self, expr: UnaryOp) -> None:
         """Generate code for unary operation."""
         if expr.op == "-":
@@ -476,135 +490,26 @@ class CodeGenerator:
             self.generate_expression(expr.operand, "A")
             self.emit("    NOT")
         elif expr.op == "++":
-            # Increment
-            if isinstance(expr.operand, Identifier):
-                var_name = expr.operand.name
-                if var_name in self.local_vars:
-                    var_info = self.local_vars[var_name]
-                    if var_info["size"] == 1:
-                        self.emit(f"    LOAD_A _{self.current_function}_{var_name}")
-                        if expr.postfix:
-                            self.emit("    PUSH_A")
-                        self.emit("    A++")
-                        self.emit(f"    STORE_A _{self.current_function}_{var_name}")
-                        if expr.postfix:
-                            self.emit("    POP_A")
-                    else:
-                        # 16-bit increment
-                        self.emit(f"    SET_CD #_{self.current_function}_{var_name}")
-                        self.emit(f"    LO_AB_CD")
-                        if expr.postfix:
-                            self.emit("    PUSH_A")
-                            self.emit("    PUSH_B")
-                        self.emit("    AB++")
-                        self.emit(f"    SET_CD #_{self.current_function}_{var_name}")
-                        self.emit(f"    ST_AB_CD")
-                        if expr.postfix:
-                            self.emit("    POP_B")
-                            self.emit("    POP_A")
-                elif var_name in self.globals:
-                    var_info = self.globals[var_name]
-                    if var_info["size"] == 1:
-                        self.emit(f"    LOAD_A _{var_name}")
-                        if expr.postfix:
-                            self.emit("    PUSH_A")
-                        self.emit("    A++")
-                        self.emit(f"    STORE_A _{var_name}")
-                        if expr.postfix:
-                            self.emit("    POP_A")
-                    else:
-                        # 16-bit increment
-                        self.emit(f"    SET_CD #_{var_name}")
-                        self.emit(f"    LO_AB_CD")
-                        if expr.postfix:
-                            self.emit("    PUSH_A")
-                            self.emit("    PUSH_B")
-                        self.emit("    AB++")
-                        self.emit(f"    SET_CD #_{var_name}")
-                        self.emit(f"    ST_AB_CD")
-                        if expr.postfix:
-                            self.emit("    POP_B")
-                            self.emit("    POP_A")
-                else:
-                    raise CodeGenError(f"Undefined variable: {var_name}")
-            else:
+            if not isinstance(expr.operand, Identifier):
                 raise CodeGenError("++ only supported for variables")
+            label, var_info = self.resolve_var(expr.operand.name)
+            self._generate_inc_dec(label, var_info["size"], is_increment=True, postfix=expr.postfix)
         elif expr.op == "--":
-            # Decrement
-            if isinstance(expr.operand, Identifier):
-                var_name = expr.operand.name
-                if var_name in self.local_vars:
-                    var_info = self.local_vars[var_name]
-                    if var_info["size"] == 1:
-                        self.emit(f"    LOAD_A _{self.current_function}_{var_name}")
-                        if expr.postfix:
-                            self.emit("    PUSH_A")
-                        self.emit("    A--")
-                        self.emit(f"    STORE_A _{self.current_function}_{var_name}")
-                        if expr.postfix:
-                            self.emit("    POP_A")
-                    else:
-                        # 16-bit decrement
-                        self.emit(f"    SET_CD #_{self.current_function}_{var_name}")
-                        self.emit(f"    LO_AB_CD")
-                        if expr.postfix:
-                            self.emit("    PUSH_A")
-                            self.emit("    PUSH_B")
-                        self.emit("    AB--")
-                        self.emit(f"    SET_CD #_{self.current_function}_{var_name}")
-                        self.emit(f"    ST_AB_CD")
-                        if expr.postfix:
-                            self.emit("    POP_B")
-                            self.emit("    POP_A")
-                elif var_name in self.globals:
-                    var_info = self.globals[var_name]
-                    if var_info["size"] == 1:
-                        self.emit(f"    LOAD_A _{var_name}")
-                        if expr.postfix:
-                            self.emit("    PUSH_A")
-                        self.emit("    A--")
-                        self.emit(f"    STORE_A _{var_name}")
-                        if expr.postfix:
-                            self.emit("    POP_A")
-                    else:
-                        # 16-bit decrement
-                        self.emit(f"    SET_CD #_{var_name}")
-                        self.emit(f"    LO_AB_CD")
-                        if expr.postfix:
-                            self.emit("    PUSH_A")
-                            self.emit("    PUSH_B")
-                        self.emit("    AB--")
-                        self.emit(f"    SET_CD #_{var_name}")
-                        self.emit(f"    ST_AB_CD")
-                        if expr.postfix:
-                            self.emit("    POP_B")
-                            self.emit("    POP_A")
-                else:
-                    raise CodeGenError(f"Undefined variable: {var_name}")
-            else:
+            if not isinstance(expr.operand, Identifier):
                 raise CodeGenError("-- only supported for variables")
+            label, var_info = self.resolve_var(expr.operand.name)
+            self._generate_inc_dec(label, var_info["size"], is_increment=False, postfix=expr.postfix)
         elif expr.op == "&":
             # Address-of: produce the variable's static address in AB
             if not isinstance(expr.operand, Identifier):
                 raise CodeGenError("Address-of requires a variable")
-            name = expr.operand.name
-            if name in self.local_vars:
-                var_info = self.local_vars[name]
-                label = f"_{self.current_function}_{name}"
-            elif name in self.globals:
-                var_info = self.globals[name]
-                label = f"_{name}"
-            else:
-                raise CodeGenError(f"Undefined variable: {name}")
+            label, _ = self.resolve_var(expr.operand.name)
             self.emit(f"    SET_AB #{label}")
-            self.last_expr_type = PointerType(
-                base_type=var_info["type"], line=expr.line, column=expr.column
-            )
 
         elif expr.op == "*":
             # Dereference: load value at the address held in the pointer
             self.generate_expression(expr.operand, "A")
-            ptr_type = self.last_expr_type
+            ptr_type = expr.operand.resolved_type
             if not isinstance(ptr_type, PointerType):
                 raise CodeGenError("Dereference of non-pointer type")
             pointee_type = ptr_type.base_type
@@ -613,7 +518,6 @@ class CodeGenerator:
                 self.emit("    LOAD_A_CD")
             else:
                 self.emit("    LO_AB_CD")
-            self.last_expr_type = pointee_type
 
         else:
             raise CodeGenError(f"Unsupported unary operator: {expr.op}")
@@ -624,7 +528,7 @@ class CodeGenerator:
             raise CodeGenError("Compound assignment through pointer not yet supported")
         # Evaluate pointer expression — address lands in AB
         self.generate_expression(expr.target.operand, "A")
-        ptr_type = self.last_expr_type
+        ptr_type = expr.target.operand.resolved_type
         if not isinstance(ptr_type, PointerType):
             raise CodeGenError("Dereference of non-pointer type")
         pointee_type = ptr_type.base_type
@@ -639,7 +543,6 @@ class CodeGenerator:
             self.emit("    STORE_A_GH")
             self.emit("    GH++")
             self.emit("    STORE_B_GH")
-        self.last_expr_type = pointee_type
 
     def generate_assignment(self, expr: Assignment) -> None:
         """Generate assignment code."""
@@ -649,17 +552,7 @@ class CodeGenerator:
         if not isinstance(expr.target, Identifier):
             raise CodeGenError("Complex lvalues not yet supported")
 
-        var_name = expr.target.name
-
-        # Resolve variable info
-        if var_name in self.local_vars:
-            var_info = self.local_vars[var_name]
-            label = f"_{self.current_function}_{var_name}"
-        elif var_name in self.globals:
-            var_info = self.globals[var_name]
-            label = f"_{var_name}"
-        else:
-            raise CodeGenError(f"Undefined variable: {var_name}")
+        label, var_info = self.resolve_var(expr.target.name)
 
         is_16bit = var_info["size"] == 2
 
@@ -762,61 +655,10 @@ class CodeGenerator:
         else:
             self.emit(f"    STORE_A {label}")
 
-    def generate_function_call(self, expr: FunctionCall) -> None:
-        """Generate function call code."""
-        func_params = self.function_signatures.get(expr.function, [])
-
-        # Push stack params (3+) right-to-left so callee can pop in declaration order
-        if len(expr.arguments) > 2:
-            if len(expr.arguments) > len(func_params) and not func_params:
-                raise CodeGenError(
-                    f"Cannot determine parameter types for stack-passed arguments"
-                    f" to undeclared function '{expr.function}'"
-                )
-            for i in range(len(expr.arguments) - 1, 1, -1):
-                param_type = func_params[i].type if i < len(func_params) else None
-                is_16bit = param_type and (
-                    self.is_16bit_type(param_type) or self.is_pointer_type(param_type)
-                )
-                if is_16bit:
-                    self.generate_expression(expr.arguments[i], "AB")
-                    # Low byte (A) first, then high byte (B)
-                    self.emit("    PUSH_A")
-                    self.emit("    PUSH_B")
-                else:
-                    self.generate_expression(expr.arguments[i], "A")
-                    self.emit("    PUSH_A")
-
-        # Load params 1-2 into registers
-        param1_type = func_params[0].type if func_params else None
-        param1_is_16bit = param1_type and (
-            self.is_16bit_type(param1_type) or self.is_pointer_type(param1_type)
-        )
-        if len(expr.arguments) >= 2 and param1_is_16bit:
-            param2_type = func_params[1].type if len(func_params) > 1 else None
-            if param2_type and self.is_8bit_type(param2_type):
-                # Conflict: param 1 occupies AB, param 2 needs B.
-                # Evaluate param 2 first and park it in C, then load param 1 into AB.
-                self.generate_expression(expr.arguments[1], "A")
-                self.emit("    A>C")
-                self.generate_expression(expr.arguments[0], "A")
-            else:
-                self.generate_expression(expr.arguments[0], "A")
-                self.emit("    PUSH_A")
-                self.generate_expression(expr.arguments[1], "B")
-                self.emit("    POP_A")
-        else:
-            if len(expr.arguments) >= 1:
-                self.generate_expression(expr.arguments[0], "A")
-            if len(expr.arguments) >= 2:
-                self.emit("    PUSH_A")
-                self.generate_expression(expr.arguments[1], "B")
-                self.emit("    POP_A")
-
-        # Call function
-        self.emit(f"    GOSUB _{expr.function}")
-
+    # ------------------------------------------------------------------
     # Statement code generation
+    # ------------------------------------------------------------------
+
     def generate_statement(self, stmt: Statement) -> None:
         """Generate code for statement."""
         if isinstance(stmt, ExpressionStatement):
@@ -915,13 +757,12 @@ class CodeGenerator:
 
         elif isinstance(stmt, VariableDeclaration):
             # Local variable - allocate in function's static space
-            var_name = stmt.name
             size = self.get_type_size(stmt.type)
-            self.local_vars[var_name] = {"type": stmt.type, "size": size}
+            self._syms.declare_local(stmt.name, stmt.type, size)
 
             # Initialize if needed
             if stmt.initializer:
-                label = f"_{self.current_function}_{var_name}"
+                label = f"_{self._syms.current_function}_{stmt.name}"
                 if size == 1:
                     self.generate_expression(stmt.initializer, "A")
                     self.emit(f"    STORE_A {label}")
@@ -933,89 +774,34 @@ class CodeGenerator:
         else:
             raise CodeGenError(f"Unsupported statement: {type(stmt)}")
 
+    # ------------------------------------------------------------------
     # Top-level generation
-    def generate_global_var(self, decl: VariableDeclaration) -> None:
-        """Generate global variable."""
-        size = self.get_type_size(decl.type)
-        self.globals[decl.name] = {"type": decl.type, "size": size}
+    # ------------------------------------------------------------------
 
     def generate_function(self, func: FunctionDeclaration) -> None:
         """Generate function code."""
-        self.current_function = func.name
-        self.local_vars = {}
+        self._syms.enter_function(func.name)
 
-        # Register function parameters as local variables
-        # Parameters are passed in registers, so they're implicitly available
+        # Register parameters in local scope
         for param in func.parameters:
             size = self.get_type_size(param.type)
-            self.local_vars[param.name] = {
-                "type": param.type,
-                "size": size,
-                "is_param": True,
-            }
+            self._syms.declare_local(param.name, param.type, size, is_param=True)
 
         # Function label
         self.emit("")
         self.emit_comment(f"Function: {func.name}")
         self.emit(f"_{func.name}:")
 
-        # Save parameters to static storage
-        # For Phase 1: First param in A (char) or AB (int), second param in B (char) or CD (int)
-        if len(func.parameters) >= 1:
-            param = func.parameters[0]
-            if self.is_8bit_type(param.type):
-                self.emit(f"    STORE_A _{func.name}_{param.name}")
-            else:
-                # Save 16-bit parameter via EF pointer
-                self.emit(f"    SET_EF #_{func.name}_{param.name}")
-                self.emit(f"    STORE_A_EF")
-                self.emit("    EF++")
-                self.emit(f"    STORE_B_EF")
-
-        if len(func.parameters) >= 2:
-            param = func.parameters[1]
-            param0_is_16bit = not self.is_8bit_type(func.parameters[0].type)
-            if self.is_8bit_type(param.type):
-                if param0_is_16bit:
-                    # Param 1 occupied AB; caller parked param 2 in C to avoid conflict
-                    self.emit("    C>A")
-                    self.emit(f"    STORE_A _{func.name}_{param.name}")
-                else:
-                    self.emit(f"    STORE_B _{func.name}_{param.name}")
-            else:
-                # Save CD to parameter location via EF pointer
-                self.emit(f"    CD>AB")  # Move CD to AB
-                self.emit(f"    SET_EF #_{func.name}_{param.name}")
-                self.emit(f"    STORE_A_EF")
-                self.emit("    EF++")
-                self.emit(f"    STORE_B_EF")
-
-        # Pop stack params (3+) in declaration order (caller pushed right-to-left)
-        for i in range(2, len(func.parameters)):
-            param = func.parameters[i]
-            if self.is_8bit_type(param.type):
-                self.emit(f"    POP_A")
-                self.emit(f"    STORE_A _{func.name}_{param.name}")
-            else:
-                # Pop high byte first (B), then low byte (A) — reverse of push order
-                self.emit(f"    POP_B")
-                self.emit(f"    POP_A")
-                self.emit(f"    SET_EF #_{func.name}_{param.name}")
-                self.emit(f"    STORE_A_EF")
-                self.emit("    EF++")
-                self.emit(f"    STORE_B_EF")
+        # Save incoming register/stack parameters to static storage
+        self._cc.emit_param_saves(func)
 
         # Generate body
         if func.body:
             for stmt in func.body.statements:
                 self.generate_statement(stmt)
-
-            # Add implicit return if needed
             self.emit("    RETURN")
 
-        # Save local vars for data section
-        if self.local_vars:
-            self.all_local_vars[func.name] = self.local_vars.copy()
+        self._syms.exit_function()
 
     def generate_runtime_routines(self) -> None:
         """Emit software multiply/divide subroutines, only if used."""
@@ -1071,13 +857,11 @@ class CodeGenerator:
             self.emit("__rt_div:")
             self.emit("    PUSH_E")
             self.emit("    PUSH_H")
-            # Check for divide by zero: save A, test C, restore A
             self.emit("    A>H")  # H = dividend (save)
             self.emit("    C>A")  # A = divisor
             self.emit("    A_ZERO")  # zero flag = (divisor == 0)
             self.emit("    JMP_ZERO __rt_div_halt")
             self.emit("    H>A")  # A = dividend (restore)
-            # Initialize quotient in E = 0
             self.emit("    A>H")  # H = dividend
             self.emit("    0>A")
             self.emit("    A>E")  # E = 0 (quotient)
@@ -1095,7 +879,6 @@ class CodeGenerator:
             self.emit("__rt_div_halt:")
             self.emit("    HALT")
             self.emit("__rt_div_done:")
-            # A = remainder, E = quotient
             self.emit("    A>H")  # H = remainder
             self.emit("    E>A")  # A = quotient
             self.emit("    H>C")  # C = remainder (for % operator)
@@ -1108,7 +891,7 @@ class CodeGenerator:
         self.emit("")
         self.emit_comment("Global variables")
 
-        for name, info in self.globals.items():
+        for name, info in self._syms.globals.items():
             if info["size"] == 1:
                 self.emit(f"_{name}:")
                 self.emit("    .BYTE 0")
@@ -1129,10 +912,10 @@ class CodeGenerator:
                 self.emit(f'    .ASCIIZ "{value}"')
 
         # Local variables (static storage)
-        if self.all_local_vars:
+        if self._syms.all_local_vars:
             self.emit("")
             self.emit_comment("Static local variables")
-            for func_name, local_vars in self.all_local_vars.items():
+            for func_name, local_vars in self._syms.all_local_vars.items():
                 for var_name, info in local_vars.items():
                     if info["size"] == 1:
                         self.emit(f"_{func_name}_{var_name}:")
@@ -1153,9 +936,10 @@ class CodeGenerator:
         # First pass: collect global variables and function signatures
         for decl in program.declarations:
             if isinstance(decl, VariableDeclaration):
-                self.generate_global_var(decl)
+                size = self.get_type_size(decl.type)
+                self._syms.declare_global(decl.name, decl.type, size)
             elif isinstance(decl, FunctionDeclaration):
-                self.function_signatures[decl.name] = decl.parameters
+                self._syms.register_function(decl.name, decl.parameters)
 
         # Generate functions
         for decl in program.declarations:
@@ -1168,4 +952,4 @@ class CodeGenerator:
         # Generate data section
         self.generate_data_section()
 
-        return "\n".join(self.output)
+        return self._em.get_output()
