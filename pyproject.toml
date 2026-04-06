@@ -11,6 +11,7 @@ dependencies = [
 [project.scripts]
 sk02-asm = "sk02_asm.cli:main"
 sk02cc = "sk02cc.cli:main"
+sk02ac = "sk02action.cli:main"
 
 [tool.ruff]
 line-length = 88
@@ -20,7 +21,7 @@ target-version = "py313"
 select = ["E", "F", "W", "I"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/sk02_asm", "src/sk02cc"]
+packages = ["src/sk02_asm", "src/sk02cc", "src/sk02action"]
 
 [build-system]
 requires = ["hatchling"]
