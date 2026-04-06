@@ -1,26 +1,24 @@
 """Tests for the SK-02 assembler."""
 
 import builtins
-import pytest
 from pathlib import Path
 
+import pytest
+
 from sk02_asm.assembler import Assembler
-from sk02_asm.opcodes import OPCODES, OperandType
-from sk02_asm.lexer import Lexer, TokenType
-from sk02_asm.parser import parse_source
-from sk02_asm.preprocessor import Preprocessor, PreprocessorError
-from sk02_asm.symbols import SymbolTable
 from sk02_asm.errors import (
     AddressOutOfRangeError,
     AsmSyntaxError,
     AssemblyError,
     DuplicateSymbolError,
-    InvalidOpcodeError,
     InvalidOperandError,
     UndefinedSymbolError,
 )
+from sk02_asm.lexer import Lexer, TokenType
+from sk02_asm.opcodes import OPCODES, OperandType
 from sk02_asm.output import BinaryWriter, IntelHexWriter
-
+from sk02_asm.preprocessor import Preprocessor, PreprocessorError
+from sk02_asm.symbols import SymbolTable
 
 # ---------------------------------------------------------------------------
 # Helper
@@ -686,7 +684,7 @@ __done_\\@:
         lib_file = tmp_path / "lib.asm"
         lib_file.write_text("    NOP\n")
 
-        source = f'    .INCLUDE "lib.asm"\n    .ORG $8000\n    HALT'
+        source = '    .INCLUDE "lib.asm"\n    .ORG $8000\n    HALT'
         assembler = Assembler(source, include_paths=[tmp_path])
         output, errors = assembler.assemble()
         assert errors == [], f"Errors: {errors}"
@@ -888,7 +886,7 @@ class TestErrors:
 
     def test_asm_syntax_error_is_assembly_error_not_builtin(self):
         """AsmSyntaxError must not be caught by bare 'except SyntaxError' (builtin)."""
-        from sk02_asm.errors import AsmSyntaxError, AssemblyError
+        from sk02_asm.errors import AssemblyError
         err = AsmSyntaxError("bad syntax", line_num=1)
         assert isinstance(err, AssemblyError)
         # Must NOT be the Python builtin SyntaxError

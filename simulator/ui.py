@@ -1,8 +1,6 @@
 """Text-based UI for SK-02 simulator."""
 
-import sys
 from pathlib import Path
-from typing import Any
 
 from .cpu import CPU
 from .memory import Memory

@@ -9,12 +9,12 @@ Two helpers are provided:
 """
 
 import pytest
-from sk02cc.compiler import compile_string
-from sk02cc.type_checker import SemanticError
-from sk02_asm.assembler import Assembler
+
 from simulator.cpu import CPU
 from simulator.memory import Memory
-
+from sk02_asm.assembler import Assembler
+from sk02cc.compiler import compile_string
+from sk02cc.type_checker import SemanticError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -2047,3 +2047,689 @@ class TestSemanticErrors:
                     return *x;
                 }
             """)
+
+
+# ===========================================================================
+# FEATURE: Arrays
+#
+# Fixed-size arrays: uint8 buf[N] / uint16 arr[N].
+# Access via arr[i] — computes base + i*sizeof(T), loads/stores via CD/GH.
+# Array name in expression context decays to pointer (base address in AB).
+# ===========================================================================
+
+
+class TestArrayStorage:
+    """Array declarations must emit correct storage in the data section."""
+
+    def test_global_uint8_array_emits_bytes(self):
+        """Global uint8 buf[4] should emit 4 zero bytes."""
+        lines = asm_lines("uint8 buf[4]; void main() {}")
+        idx = next(i for i, l in enumerate(lines) if l == "_buf:")
+        storage = lines[idx + 1]
+        assert storage == ".BYTE 0, 0, 0, 0"
+
+    def test_global_uint16_array_emits_words(self):
+        """Global uint16 arr[3] should emit 3 zero words."""
+        lines = asm_lines("uint16 arr[3]; void main() {}")
+        idx = next(i for i, l in enumerate(lines) if l == "_arr:")
+        storage = lines[idx + 1]
+        assert storage == ".WORD 0, 0, 0"
+
+    def test_local_uint8_array_emits_bytes(self):
+        """Local uint8 buf[4] should emit 4 zero bytes."""
+        lines = asm_lines("void main() { uint8 buf[4]; }")
+        idx = next(i for i, l in enumerate(lines) if l == "_main_buf:")
+        storage = lines[idx + 1]
+        assert storage == ".BYTE 0, 0, 0, 0"
+
+    def test_local_uint16_array_emits_words(self):
+        """Local uint16 arr[2] should emit 2 zero words."""
+        lines = asm_lines("void main() { uint16 arr[2]; }")
+        idx = next(i for i, l in enumerate(lines) if l == "_main_arr:")
+        storage = lines[idx + 1]
+        assert storage == ".WORD 0, 0"
+
+
+class TestArrayReadUint8:
+    """Reading uint8 array elements via arr[i]."""
+
+    def test_read_index_zero_returns_zero(self):
+        """Reading from zero-initialized array at index 0 returns 0."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                return buf[0];
+            }
+        """)
+        assert cpu.A == 0
+
+    def test_read_constant_index(self):
+        """arr[2] on a zero-initialized array returns 0."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                return buf[2];
+            }
+        """)
+        assert cpu.A == 0
+
+    def test_read_emits_base_address(self):
+        """Array read should emit SET_AB referencing the array label."""
+        lines = asm_lines("""
+            uint8 buf[4];
+            uint8 main() { return buf[0]; }
+        """)
+        assert any("SET_AB #_buf" in l for l in lines)
+
+
+class TestArrayWriteUint8:
+    """Writing and reading uint8 array elements."""
+
+    def test_write_and_read_index_zero(self):
+        """buf[0] = 42; return buf[0] should yield 42."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[0] = 42;
+                return buf[0];
+            }
+        """)
+        assert cpu.A == 42
+
+    def test_write_and_read_nonzero_constant_index(self):
+        """buf[2] = 99; return buf[2] should yield 99."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[2] = 99;
+                return buf[2];
+            }
+        """)
+        assert cpu.A == 99
+
+    def test_adjacent_elements_independent(self):
+        """Writing buf[1] must not corrupt buf[0]."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[0] = 10;
+                buf[1] = 20;
+                return buf[0];
+            }
+        """)
+        assert cpu.A == 10
+
+    def test_variable_index_read(self):
+        """buf[i] where i is a variable must read the correct element."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[0] = 10;
+                buf[1] = 20;
+                buf[2] = 30;
+                uint8 i = 2;
+                return buf[i];
+            }
+        """)
+        assert cpu.A == 30
+
+    def test_variable_index_write(self):
+        """buf[i] = val where i is a variable must write the correct element."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                uint8 i = 1;
+                buf[i] = 55;
+                return buf[1];
+            }
+        """)
+        assert cpu.A == 55
+
+    def test_global_array_write_and_read(self):
+        """Global array element write and readback."""
+        cpu = run_c("""
+            uint8 buf[4];
+            uint8 main() {
+                buf[3] = 77;
+                return buf[3];
+            }
+        """)
+        assert cpu.A == 77
+
+
+class TestArrayUint16:
+    """uint16 arrays must use 2-byte elements with correct address scaling."""
+
+    def test_write_and_read_index_zero(self):
+        """uint16 arr[0] = 1000; return arr[0] should yield 1000."""
+        cpu = run_c("""
+            uint16 main() {
+                uint16 arr[2];
+                arr[0] = 1000;
+                return arr[0];
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 1000
+
+    def test_second_element_at_offset_two(self):
+        """arr[1] must be at byte offset 2 from base."""
+        cpu = run_c("""
+            uint16 main() {
+                uint16 arr[3];
+                arr[0] = 100;
+                arr[1] = 2000;
+                arr[2] = 300;
+                return arr[1];
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 2000
+
+    def test_variable_index_scales_by_two(self):
+        """Variable index with uint16 must scale offset by 2."""
+        cpu = run_c("""
+            uint16 main() {
+                uint16 arr[3];
+                arr[0] = 111;
+                arr[1] = 222;
+                arr[2] = 333;
+                uint8 i = 2;
+                return arr[i];
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 333
+
+
+class TestArrayPointerSubscript:
+    """Subscript through a pointer variable: p[i] where p is uint8*."""
+
+    def test_pointer_subscript_read(self):
+        """p[2] where p points to buf should read buf[2]."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[2] = 42;
+                uint8* p = buf;
+                return p[2];
+            }
+        """)
+        assert cpu.A == 42
+
+    def test_pointer_subscript_write(self):
+        """p[1] = 99 where p points to buf should write buf[1]."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                uint8* p = buf;
+                p[1] = 99;
+                return buf[1];
+            }
+        """)
+        assert cpu.A == 99
+
+    def test_16bit_index_variable(self):
+        """uint16 index must not be truncated to 8 bits."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[3] = 88;
+                uint16 i = 3;
+                return buf[i];
+            }
+        """)
+        assert cpu.A == 88
+
+
+class TestArrayDecay:
+    """Array name in expression context decays to pointer (base address)."""
+
+    def test_array_assigned_to_pointer(self):
+        """uint8* p = buf; *p should read buf[0]."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[0] = 42;
+                uint8* p = buf;
+                return *p;
+            }
+        """)
+        assert cpu.A == 42
+
+    def test_array_passed_to_function(self):
+        """Passing array to function expecting uint8* should work."""
+        cpu = run_c("""
+            uint8 first(uint8* p) {
+                return *p;
+            }
+            uint8 main() {
+                uint8 buf[4];
+                buf[0] = 77;
+                return first(buf);
+            }
+        """)
+        assert cpu.A == 77
+
+
+class TestArrayIntegration:
+    """End-to-end tests for realistic array usage patterns."""
+
+    def test_loop_fill_and_sum(self):
+        """Fill array in a loop, then sum all elements."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                uint8 i = 0;
+                while (i < 4) {
+                    buf[i] = i + 1;
+                    i++;
+                }
+                return buf[0] + buf[1] + buf[2] + buf[3];
+            }
+        """)
+        assert cpu.A == 10  # 1+2+3+4
+
+    def test_linear_search(self):
+        """Linear search: return index of first match."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 data[5];
+                data[0] = 10;
+                data[1] = 20;
+                data[2] = 30;
+                data[3] = 40;
+                data[4] = 50;
+                uint8 target = 30;
+                uint8 i = 0;
+                while (i < 5) {
+                    if (data[i] == target) {
+                        return i;
+                    }
+                    i++;
+                }
+                return 255;
+            }
+        """)
+        assert cpu.A == 2
+
+    def test_uint16_accumulator(self):
+        """Sum uint16 array elements in a loop."""
+        cpu = run_c("""
+            uint16 main() {
+                uint16 vals[3];
+                vals[0] = 100;
+                vals[1] = 200;
+                vals[2] = 300;
+                uint16 sum = 0;
+                uint8 i = 0;
+                while (i < 3) {
+                    sum = sum + vals[i];
+                    i++;
+                }
+                return sum;
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 600
+
+    def test_global_array_across_functions(self):
+        """Global array written by one function, read by another."""
+        cpu = run_c("""
+            uint8 buf[4];
+            void fill() {
+                buf[0] = 5;
+                buf[1] = 10;
+                buf[2] = 15;
+                buf[3] = 20;
+            }
+            uint8 main() {
+                fill();
+                return buf[2];
+            }
+        """)
+        assert cpu.A == 15
+
+    def test_expression_as_index(self):
+        """arr[j + 1] — binary expression as array index must work."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[0] = 10;
+                buf[1] = 20;
+                buf[2] = 30;
+                buf[3] = 40;
+                uint8 j = 1;
+                return buf[j + 1];
+            }
+        """)
+        assert cpu.A == 30
+
+    def test_bubble_sort_uint16(self):
+        """uint16 bubble sort via global array and expression indices."""
+        cpu = run_c("""
+            uint16 arr[6];
+            uint8 arr_len;
+
+            void bubble_sort() {
+                uint8 i = 0;
+                while (i < arr_len - 1) {
+                    uint8 j = 0;
+                    while (j < arr_len - 1 - i) {
+                        if (arr[j] > arr[j + 1]) {
+                            uint16 tmp = arr[j];
+                            arr[j] = arr[j + 1];
+                            arr[j + 1] = tmp;
+                        }
+                        j++;
+                    }
+                    i++;
+                }
+            }
+
+            uint16 main() {
+                arr[0] = 300;
+                arr[1] = 42;
+                arr[2] = 1000;
+                arr[3] = 7;
+                arr[4] = 500;
+                arr[5] = 128;
+                arr_len = 6;
+                bubble_sort();
+                return arr[0];
+            }
+        """)
+        assert cpu.A == 7
+        assert cpu.B == 0
+
+
+# ===========================================================================
+# BUG: Array codegen issues found in Codex review
+# ===========================================================================
+
+
+class TestArrayDecayResultReg:
+    """Array decay must respect the result_reg requested by the caller (P1).
+
+    The Identifier branch for arrays always emitted SET_AB, ignoring
+    result_reg. This breaks passing an array as the second argument to a
+    function — the calling convention expects it in CD, but it landed in AB.
+    """
+
+    def test_array_as_second_argument(self):
+        """Array passed as second param (pointer in CD) must reach callee."""
+        cpu = run_c("""
+            uint8 read_index(uint8 idx, uint8* p) {
+                return p[idx];
+            }
+            uint8 main() {
+                uint8 buf[4];
+                buf[2] = 55;
+                return read_index(2, buf);
+            }
+        """)
+        assert cpu.A == 55
+
+    def test_array_decay_into_cd(self):
+        """Array name used as second wide arg must be moved to CD before GOSUB."""
+        lines = asm_lines("""
+            uint8 buf[4];
+            void take(uint16 x, uint8* p) {}
+            void main() { take(1, buf); }
+        """)
+        # Calling convention: wide param2 is evaluated into AB then AB>CD.
+        assert any("SET_AB #_buf" in l for l in lines)
+        assert any("AB>CD" in l for l in lines)
+
+
+class TestArrayAssignmentRejected:
+    """Assigning one array variable to another must be rejected (P2).
+
+    Previously generate_assignment() accepted any Identifier target and
+    treated it as a scalar, silently miscompiling array-to-array copies.
+    """
+
+    def test_whole_array_assignment_raises(self):
+        """a = b where both are arrays must raise CodeGenError."""
+        with pytest.raises(Exception):
+            compile_string("""
+                void main() {
+                    uint8 a[2];
+                    uint8 b[2];
+                    a = b;
+                }
+            """)
+
+
+class TestZeroLengthArrayRejected:
+    """Zero-length array declarations must be rejected (P3).
+
+    _zero_storage_directive() used `typ.size or 1`, allocating one element
+    for uint8 buf[0]. Zero-length arrays should be a compile-time error.
+    """
+
+    def test_zero_length_array_raises(self):
+        """uint8 buf[0] must raise an error, not silently allocate storage."""
+        with pytest.raises(Exception):
+            compile_string("void main() { uint8 buf[0]; }")
+
+
+# ===========================================================================
+# BUG: Array index evaluation clobbers base address / carry loss on scaling
+# ===========================================================================
+
+
+class TestArrayIndexClobber:
+    """Complex 8-bit index expressions must not clobber the base in CD (P1).
+
+    When the index expression itself performs an array access (or any other
+    operation that uses CD), the parked base address was overwritten before
+    the AB+CD addition, silently reading/writing the wrong element.
+    """
+
+    def test_nested_array_subscript_as_index(self):
+        """buf[idxs[0]] — subscript-as-index must not corrupt buf's base."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 idxs[3];
+                uint8 buf[4];
+                idxs[0] = 2;
+                buf[2] = 77;
+                return buf[idxs[0]];
+            }
+        """)
+        assert cpu.A == 77
+
+    def test_nested_index_write(self):
+        """buf[idxs[1]] = val write with nested index must land in correct slot."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 idxs[3];
+                uint8 buf[4];
+                idxs[1] = 3;
+                buf[idxs[1]] = 55;
+                return buf[3];
+            }
+        """)
+        assert cpu.A == 55
+
+
+class TestArrayUint16IndexCarry:
+    """8-bit index into uint16 array must zero-extend before shifting (P2).
+
+    The old code did A<< then 0>B, which drops the carry bit for indices
+    >= 128. The correct sequence is 0>B first (zero-extend), then AB<<.
+    """
+
+    def test_large_uint8_index_uint16_array(self):
+        """uint16 arr; uint8 i=200 must address offset 400, not 144."""
+        cpu = run_c("""
+            uint16 main() {
+                uint16 arr[210];
+                arr[200] = 999;
+                uint8 i = 200;
+                return arr[i];
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 999
+
+    def test_index_128_boundary(self):
+        """index exactly 128 must not lose the shifted bit."""
+        cpu = run_c("""
+            uint16 main() {
+                uint16 arr[130];
+                arr[128] = 1234;
+                uint8 i = 128;
+                return arr[i];
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 1234
+
+
+# ===========================================================================
+# BUG: _generate_array_access_read ignores result_reg
+#
+# Array element reads always land in A/AB, ignoring the register requested
+# by the caller. This breaks f(x, buf[i]) where the calling convention
+# evaluates the second 8-bit argument with result_reg="B".
+# ===========================================================================
+
+
+class TestArrayReadResultReg:
+    """Array element reads must respect the result_reg requested by the caller."""
+
+    def test_array_element_as_second_arg(self):
+        """f(1, buf[2]) — buf[2] must reach the callee as second argument."""
+        cpu = run_c("""
+            uint8 add(uint8 a, uint8 b) { return a + b; }
+            uint8 main() {
+                uint8 buf[4];
+                buf[2] = 10;
+                return add(5, buf[2]);
+            }
+        """)
+        assert cpu.A == 15
+
+    def test_array_element_second_arg_variable_index(self):
+        """f(1, buf[i]) with variable index must pass the correct value."""
+        cpu = run_c("""
+            uint8 add(uint8 a, uint8 b) { return a + b; }
+            uint8 main() {
+                uint8 buf[4];
+                buf[3] = 20;
+                uint8 i = 3;
+                return add(7, buf[i]);
+            }
+        """)
+        assert cpu.A == 27
+
+
+# ===========================================================================
+# FEATURE: Compound assignment to array elements (arr[i] += val)
+# ===========================================================================
+
+
+class TestArrayCompoundAssignment:
+    """arr[i] += val and friends must read-modify-write the correct element."""
+
+    def test_add_assign_constant_index(self):
+        """arr[1] += 5 with constant index."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[1] = 10;
+                buf[1] += 5;
+                return buf[1];
+            }
+        """)
+        assert cpu.A == 15
+
+    def test_add_assign_variable_index(self):
+        """arr[i] += 3 with variable index."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[2] = 20;
+                uint8 i = 2;
+                buf[i] += 3;
+                return buf[2];
+            }
+        """)
+        assert cpu.A == 23
+
+    def test_sub_assign(self):
+        """arr[0] -= 4."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[0] = 100;
+                buf[0] -= 4;
+                return buf[0];
+            }
+        """)
+        assert cpu.A == 96
+
+    def test_or_assign(self):
+        """arr[0] |= 0x0F."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[0] = 0xF0;
+                buf[0] |= 0x0F;
+                return buf[0];
+            }
+        """)
+        assert cpu.A == 0xFF
+
+    def test_and_assign(self):
+        """arr[0] &= 0x0F."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[0] = 0xFF;
+                buf[0] &= 0x0F;
+                return buf[0];
+            }
+        """)
+        assert cpu.A == 0x0F
+
+    def test_xor_assign(self):
+        """arr[0] ^= 0xFF."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[0] = 0xAA;
+                buf[0] ^= 0xFF;
+                return buf[0];
+            }
+        """)
+        assert cpu.A == 0x55
+
+    def test_uint16_add_assign(self):
+        """uint16 arr[i] += val."""
+        cpu = run_c("""
+            uint16 main() {
+                uint16 arr[3];
+                arr[1] = 1000;
+                arr[1] += 500;
+                return arr[1];
+            }
+        """)
+        result = cpu.A | (cpu.B << 8)
+        assert result == 1500
+
+    def test_does_not_corrupt_neighbours(self):
+        """Compound assignment to arr[1] must not touch arr[0] or arr[2]."""
+        cpu = run_c("""
+            uint8 main() {
+                uint8 buf[4];
+                buf[0] = 1;
+                buf[1] = 10;
+                buf[2] = 2;
+                buf[1] += 5;
+                return buf[0] + buf[2];
+            }
+        """)
+        assert cpu.A == 3

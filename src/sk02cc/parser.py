@@ -1,6 +1,5 @@
 """Parser for SK02-C compiler."""
 
-from typing import Optional
 
 from .ast_nodes import *
 from .tokens import Token, TokenType

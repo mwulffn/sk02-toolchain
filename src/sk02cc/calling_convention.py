@@ -23,7 +23,6 @@ from .ast_nodes import FunctionCall, FunctionDeclaration, Parameter, Type
 from .codegen_errors import CodeGenError
 from .emitter import Emitter
 
-
 # Type alias for the generate_expression callback
 _GenExprFn = Callable[[object, str], None]  # (expr, result_reg) -> None
 
@@ -93,17 +92,29 @@ class CallingConvention:
                 self._em.emit("    A>C")
                 self._gen(args[0], "A")
             else:
-                # Both wide: param 1 → AB, param 2 → CD.
+                # Both wide: param1 → AB, param2 → CD.
+                # Save both bytes of param1, evaluate param2 into AB, move to CD,
+                # then restore param1 into AB.
                 self._gen(args[0], "A")
                 self._em.emit("    PUSH_A")
-                self._gen(args[1], "B")
+                self._em.emit("    PUSH_B")
+                self._gen(args[1], "AB")
+                self._em.emit("    AB>CD")
+                self._em.emit("    POP_B")
                 self._em.emit("    POP_A")
         else:
             if len(args) >= 1:
                 self._gen(args[0], "A")
             if len(args) >= 2:
+                param2_type = func_params[1].type if len(func_params) > 1 else None
                 self._em.emit("    PUSH_A")
-                self._gen(args[1], "B")
+                if _is_wide(param2_type):
+                    # Wide param2 goes in CD: evaluate into AB, move to CD.
+                    # Narrow param1 evaluation cannot touch CD, so this is safe.
+                    self._gen(args[1], "AB")
+                    self._em.emit("    AB>CD")
+                else:
+                    self._gen(args[1], "B")
                 self._em.emit("    POP_A")
 
         self._em.emit(f"    GOSUB _{expr.function}")
@@ -125,7 +136,7 @@ class CallingConvention:
                 self._em.emit(f"    SET_EF #_{name}_{p.name}")
                 self._em.emit("    STORE_A_EF")
                 self._em.emit("    EF++")
-                self._em.emit(f"    STORE_B_EF")
+                self._em.emit("    STORE_B_EF")
 
         if len(params) >= 2:
             p = params[1]
@@ -142,7 +153,7 @@ class CallingConvention:
                 self._em.emit(f"    SET_EF #_{name}_{p.name}")
                 self._em.emit("    STORE_A_EF")
                 self._em.emit("    EF++")
-                self._em.emit(f"    STORE_B_EF")
+                self._em.emit("    STORE_B_EF")
 
         # Stack-passed params (index 2+): pop in declaration order.
         for i in range(2, len(params)):
@@ -156,4 +167,4 @@ class CallingConvention:
                 self._em.emit(f"    SET_EF #_{name}_{p.name}")
                 self._em.emit("    STORE_A_EF")
                 self._em.emit("    EF++")
-                self._em.emit(f"    STORE_B_EF")
+                self._em.emit("    STORE_B_EF")

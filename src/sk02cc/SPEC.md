@@ -188,7 +188,6 @@ All pointers are `uint16` addresses (2 bytes), stored in static storage like any
 
 - Pointer arithmetic (`ptr + n` must scale by `sizeof(*ptr)`)
 - Compound assignment through pointers (`*ptr += 5`)
-- Array subscript as pointer dereference (`arr[i]` = `*(arr + i)`)
 
 ---
 
@@ -198,6 +197,13 @@ All pointers are `uint16` addresses (2 bytes), stored in static storage like any
 - Access `arr[i]`: compute address as base + i×sizeof(T), load into pointer register
 - No bounds checking
 - Multidimensional arrays: out of scope
+
+**Signed index behaviour:** Signed (`int8`/`int16`) array indices are zero-extended, not
+sign-extended, before the byte-offset calculation. Negative indices therefore wrap to large
+positive offsets and access memory outside the array. This is **undefined behaviour** in
+standard C. The SK-02 has no MMU or runtime bounds checking, so there is nothing useful to
+do with a negative index anyway; treating it as unsigned is a deliberate choice that keeps
+the generated code simple and matches the hardware's unsigned-first ALU.
 
 ---
 
@@ -242,6 +248,6 @@ for correct instruction sequences, or end-to-end via the simulator).
 - ~~Software multiply/divide/modulo~~ ✓ Done — `__rt_mul` / `__rt_div` subroutines, emitted only when used
 - ~~Logical `&&` / `||`~~ ✓ Done — short-circuit evaluation
 - ~~Pointers and address-of~~ ✓ Done — `&var` emits `SET_AB #label`; `*ptr` read via `AB>CD` + `LOAD_A_CD`/`LO_AB_CD`; `*ptr = val` write via `AB>GH` + `STORE_A_GH`/`STORE_B_GH`
-- Array access
+- ~~Array access~~ ✓ Done — `arr[i]` read/write for `uint8`/`uint16`, constant and variable indices, pointer subscript `p[i]`, array decay to pointer, compound assignment `arr[i] += val`
 - `do`/`while`, `switch`/`case`
 - ~~More than 2 function parameters (stack-passed)~~ ✓ Done — params 3+ pushed right-to-left by caller, popped in order by callee

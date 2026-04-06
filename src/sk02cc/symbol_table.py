@@ -8,7 +8,6 @@ assembly label and var_info dict used throughout codegen.
 from .ast_nodes import Parameter, Type
 from .codegen_errors import CodeGenError
 
-
 VarInfo = dict  # {"type": Type, "size": int, "is_param"?: bool}
 
 

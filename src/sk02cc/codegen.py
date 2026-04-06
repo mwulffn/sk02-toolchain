@@ -72,6 +72,21 @@ class CodeGenerator:
     def is_pointer_type(self, typ: Type) -> bool:
         return isinstance(typ, PointerType)
 
+    def _zero_storage_directive(self, typ: Type, size: int) -> str:
+        """Return a .BYTE or .WORD directive string with zero-initialised storage."""
+        if isinstance(typ, ArrayType):
+            if not typ.size:
+                raise CodeGenError("Zero-length arrays are not supported")
+            elem_size = self.get_type_size(typ.base_type)
+            count = typ.size
+            if elem_size == 1:
+                return ".BYTE " + ", ".join(["0"] * count)
+            else:
+                return ".WORD " + ", ".join(["0"] * count)
+        if size == 1:
+            return ".BYTE 0"
+        return ".WORD 0"
+
     # ------------------------------------------------------------------
     # Expression code generation
     # ------------------------------------------------------------------
@@ -97,12 +112,18 @@ class CodeGenerator:
 
         elif isinstance(expr, Identifier):
             label, var_info = self.resolve_var(expr.name)
-            if var_info["size"] == 1:
+            if isinstance(var_info["type"], ArrayType):
+                # Array name decays to pointer — emit base address into the
+                # requested wide register (AB or CD) so callers that need the
+                # address in CD (e.g. second pointer argument) work correctly.
+                target_reg = result_reg if result_reg in ("AB", "CD", "EF", "GH") else "AB"
+                self.emit(f"    SET_{target_reg} #{label}")
+            elif var_info["size"] == 1:
                 self.emit(f"    LOAD_A {label}")
             else:
                 # Load 16-bit value via CD pointer
                 self.emit(f"    SET_CD #{label}")
-                self.emit(f"    LO_AB_CD")
+                self.emit("    LO_AB_CD")
 
         elif isinstance(expr, BinaryOp):
             self.generate_binary_op(expr)
@@ -121,6 +142,9 @@ class CodeGenerator:
             str_label = f"_str{len(self.string_literals)}"
             self.string_literals.append((str_label, expr.value))
             self.emit(f"    SET_AB #{str_label}")
+
+        elif isinstance(expr, ArrayAccess):
+            self._generate_array_access_read(expr, result_reg)
 
         else:
             raise CodeGenError(f"Unsupported expression: {type(expr)}")
@@ -544,15 +568,146 @@ class CodeGenerator:
             self.emit("    GH++")
             self.emit("    STORE_B_GH")
 
+    def _emit_array_base(self, array_expr: "Expression") -> None:
+        """Load array base address into AB. May use CD as scratch."""
+        if (
+            isinstance(array_expr, Identifier)
+            and isinstance(array_expr.resolved_type, ArrayType)
+        ):
+            label, _ = self.resolve_var(array_expr.name)
+            self.emit(f"    SET_AB #{label}")
+        else:
+            # Pointer expression — evaluate to get the pointer value into AB
+            self.generate_expression(array_expr, "AB")
+
+    def _compute_array_address(self, expr: ArrayAccess) -> None:
+        """Compute array element address into AB."""
+        elem_type = expr.resolved_type
+        elem_size = self.get_type_size(elem_type)
+
+        if isinstance(expr.index, NumberLiteral):
+            # Constant index: base + compile-time byte offset
+            byte_offset = expr.index.value * elem_size
+            self._emit_array_base(expr.array)
+            if byte_offset > 0:
+                self.emit(f"    SET_CD #{byte_offset}")
+                self.emit("    AB+CD")
+        else:
+            # Evaluate and scale the index first — index evaluation may freely use CD.
+            # For 8-bit: zero-extend to 16-bit BEFORE shifting to preserve carry.
+            idx_type = expr.index.resolved_type
+            if self.is_8bit_type(idx_type):
+                self.generate_expression(expr.index, "A")
+                self.emit("    0>B")       # zero-extend first (preserves carry on shift)
+                if elem_size == 2:
+                    self.emit("    AB<<")  # scale ×2 as 16-bit
+            else:
+                self.generate_expression(expr.index, "AB")
+                if elem_size == 2:
+                    self.emit("    AB<<")  # scale ×2
+            # Push scaled index, compute base into CD, pop index, add.
+            # This protects the index from CD clobber during base evaluation.
+            self.emit("    PUSH_A")
+            self.emit("    PUSH_B")
+            self._emit_array_base(expr.array)  # base into AB (uses CD freely)
+            self.emit("    AB>CD")
+            self.emit("    POP_B")
+            self.emit("    POP_A")
+            self.emit("    AB+CD")   # AB = scaled_index + base
+
+    def _generate_array_access_read(self, expr: ArrayAccess, result_reg: str = "A") -> None:
+        """Generate a read from arr[i] into result_reg."""
+        self._compute_array_address(expr)
+        elem_type = expr.resolved_type
+        self.emit("    AB>CD")
+        if self.is_8bit_type(elem_type):
+            self.emit("    LOAD_A_CD")
+            # Move to requested single-byte register if not A
+            if result_reg == "B":
+                self.emit("    A>B")
+            elif result_reg not in ("A", "AB"):
+                self.emit(f"    A>{result_reg}")
+        else:
+            self.emit("    LO_AB_CD")
+
+    def _generate_array_access_write(self, expr: Assignment) -> None:
+        """Generate a write to arr[i] = value, or a compound arr[i] op= value."""
+        target = expr.target
+        if not isinstance(target, ArrayAccess):
+            raise CodeGenError("Expected ArrayAccess target")
+        self._compute_array_address(target)
+        # Park address in GH — safe; no expression evaluation touches GH.
+        self.emit("    AB>GH")
+        elem_type = target.resolved_type
+        is_8bit = self.is_8bit_type(elem_type)
+
+        if expr.op != "=":
+            # Compound: read current element value, push as LHS, eval RHS, apply op.
+            if is_8bit:
+                self.emit("    GH>AB")
+                self.emit("    AB>CD")
+                self.emit("    LOAD_A_CD")   # current value → A
+                self.emit("    PUSH_A")       # save LHS
+                self.generate_expression(expr.value, "A")   # RHS → A
+                self.emit("    A>B")          # RHS → B
+                self.emit("    POP_A")        # LHS → A
+                op_map_8 = {
+                    "+=": "ADD", "-=": "SUB",
+                    "&=": "AND", "|=": "OR", "^=": "XOR",
+                }
+                if expr.op in op_map_8:
+                    self.emit(f"    {op_map_8[expr.op]}")
+                else:
+                    raise CodeGenError(
+                        f"Unsupported compound operator for array element: {expr.op}"
+                    )
+                self.emit("    STORE_A_GH")
+            else:
+                # 16-bit compound
+                self.emit("    GH>AB")
+                self.emit("    AB>CD")
+                self.emit("    LO_AB_CD")    # current value → AB
+                self.emit("    PUSH_A")
+                self.emit("    PUSH_B")      # save LHS (16-bit)
+                self.generate_expression(expr.value, "AB")  # RHS → AB
+                self.emit("    AB>CD")       # RHS → CD
+                self.emit("    POP_B")
+                self.emit("    POP_A")       # LHS → AB
+                op_map_16 = {"+=": "AB+CD", "-=": "AB-CD"}
+                if expr.op in op_map_16:
+                    self.emit(f"    {op_map_16[expr.op]}")
+                else:
+                    raise CodeGenError(
+                        f"Unsupported compound operator for 16-bit array element: {expr.op}"
+                    )
+                self.emit("    STORE_A_GH")
+                self.emit("    GH++")
+                self.emit("    STORE_B_GH")
+        else:
+            # Simple assignment
+            if is_8bit:
+                self.generate_expression(expr.value, "A")
+                self.emit("    STORE_A_GH")
+            else:
+                self.generate_expression(expr.value, "AB")
+                self.emit("    STORE_A_GH")
+                self.emit("    GH++")
+                self.emit("    STORE_B_GH")
+
     def generate_assignment(self, expr: Assignment) -> None:
         """Generate assignment code."""
         if isinstance(expr.target, UnaryOp) and expr.target.op == "*":
             self._generate_deref_assignment(expr)
             return
+        if isinstance(expr.target, ArrayAccess):
+            self._generate_array_access_write(expr)
+            return
         if not isinstance(expr.target, Identifier):
             raise CodeGenError("Complex lvalues not yet supported")
 
         label, var_info = self.resolve_var(expr.target.name)
+        if isinstance(var_info["type"], ArrayType):
+            raise CodeGenError("Cannot assign to an array variable")
 
         is_16bit = var_info["size"] == 2
 
@@ -560,7 +715,7 @@ class CodeGenerator:
         if expr.op != "=":
             if is_16bit:
                 self.emit(f"    SET_CD #{label}")
-                self.emit(f"    LO_AB_CD")
+                self.emit("    LO_AB_CD")
             else:
                 self.emit(f"    LOAD_A {label}")
             self.emit("    PUSH_A")
@@ -651,7 +806,7 @@ class CodeGenerator:
         # Store result
         if is_16bit:
             self.emit(f"    SET_CD #{label}")
-            self.emit(f"    ST_AB_CD")
+            self.emit("    ST_AB_CD")
         else:
             self.emit(f"    STORE_A {label}")
 
@@ -769,7 +924,7 @@ class CodeGenerator:
                 else:
                     self.generate_expression(stmt.initializer, "AB")
                     self.emit(f"    SET_CD #{label}")
-                    self.emit(f"    ST_AB_CD")
+                    self.emit("    ST_AB_CD")
 
         else:
             raise CodeGenError(f"Unsupported statement: {type(stmt)}")
@@ -892,12 +1047,9 @@ class CodeGenerator:
         self.emit_comment("Global variables")
 
         for name, info in self._syms.globals.items():
-            if info["size"] == 1:
-                self.emit(f"_{name}:")
-                self.emit("    .BYTE 0")
-            else:
-                self.emit(f"_{name}:")
-                self.emit("    .WORD 0")
+            self.emit(f"_{name}:")
+            directive = self._zero_storage_directive(info["type"], info["size"])
+            self.emit(f"    {directive}")
 
         # String literals
         if self.string_literals:
@@ -917,12 +1069,9 @@ class CodeGenerator:
             self.emit_comment("Static local variables")
             for func_name, local_vars in self._syms.all_local_vars.items():
                 for var_name, info in local_vars.items():
-                    if info["size"] == 1:
-                        self.emit(f"_{func_name}_{var_name}:")
-                        self.emit("    .BYTE 0")
-                    else:
-                        self.emit(f"_{func_name}_{var_name}:")
-                        self.emit("    .WORD 0")
+                    self.emit(f"_{func_name}_{var_name}:")
+                    directive = self._zero_storage_directive(info["type"], info["size"])
+                    self.emit(f"    {directive}")
 
     def generate(self, program: Program) -> str:
         """Generate assembly code from AST."""

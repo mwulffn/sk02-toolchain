@@ -147,7 +147,7 @@ class Lexer:
                 char_value = "\\" + self.current_char()
                 self.advance()
             else:
-                raise LexerError(f"Invalid escape sequence", self.line, self.column)
+                raise LexerError("Invalid escape sequence", self.line, self.column)
         else:
             char_value = self.current_char()
             self.advance()
