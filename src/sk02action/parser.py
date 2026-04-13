@@ -26,7 +26,9 @@ from .ast_nodes import (
     ProcDecl,
     Program,
     ReturnStmt,
+    SetDirective,
     Statement,
+    StringLiteral,
     Type,
     UnaryOp,
     UntilLoop,
@@ -93,15 +95,19 @@ class Parser:
         """Parse the entire program."""
         tok = self._current()
         declarations: list[Declaration] = []
+        directives: list[SetDirective] = []
 
         while not self._match(TokenType.EOF):
-            decl = self._parse_top_level()
-            if isinstance(decl, list):
-                declarations.extend(decl)
+            if self._match(TokenType.SET):
+                directives.append(self._parse_set_directive())
             else:
-                declarations.append(decl)
+                decl = self._parse_top_level()
+                if isinstance(decl, list):
+                    declarations.extend(decl)
+                else:
+                    declarations.append(decl)
 
-        return Program(declarations, tok.line, tok.column)
+        return Program(declarations, tok.line, tok.column, directives)
 
     def _parse_top_level(self) -> Declaration | list[Declaration]:
         """Parse a top-level declaration (var, proc, or func)."""
@@ -172,18 +178,57 @@ class Parser:
         address = None
         initial_value = None
 
+        initial_values = None
+
         if isinstance(var_type, ArrayType):
-            # Array: name(size) [=addr]
-            self._expect(TokenType.LPAREN)
-            size = self._parse_const_value()
-            self._expect(TokenType.RPAREN)
-            var_type = ArrayType(
-                var_type.base_type, size, var_type.line, var_type.column
-            )
-            self._array_names.add(name)
-            if self._match(TokenType.EQ):
-                self._advance()
-                address = self._parse_const_value()
+            if self._match(TokenType.LPAREN):
+                # name(size) [=addr]
+                self._expect(TokenType.LPAREN)
+                size = self._parse_const_value()
+                self._expect(TokenType.RPAREN)
+                var_type = ArrayType(
+                    var_type.base_type, size, var_type.line, var_type.column
+                )
+                self._array_names.add(name)
+                if self._match(TokenType.EQ):
+                    self._advance()
+                    address = self._parse_const_value()
+            elif self._match(TokenType.EQ):
+                self._advance()  # consume '='
+                if self._match(TokenType.LBRACKET):
+                    # name = [v1 v2 ...]
+                    self._advance()  # consume '['
+                    values: list[int] = []
+                    while not self._match(TokenType.RBRACKET):
+                        values.append(self._parse_const_value())
+                    self._expect(TokenType.RBRACKET)
+                    var_type = ArrayType(
+                        var_type.base_type, len(values), var_type.line, var_type.column
+                    )
+                    self._array_names.add(name)
+                    initial_values = values
+                elif self._match(TokenType.STRING):
+                    # name = "string"
+                    tok_str = self._advance()
+                    s = self._decode_string_token(tok_str)
+                    if len(s) > 255:
+                        raise ParseError("String literal too long (max 255)", tok_str)
+                    bytes_data = [len(s)] + [ord(c) for c in s]
+                    var_type = ArrayType(
+                        var_type.base_type,
+                        len(bytes_data),
+                        var_type.line,
+                        var_type.column,
+                    )
+                    self._array_names.add(name)
+                    initial_values = bytes_data
+                else:
+                    # name = addr
+                    address = self._parse_const_value()
+                    var_type = ArrayType(
+                        var_type.base_type, 0, var_type.line, var_type.column
+                    )
+                    self._array_names.add(name)
         else:
             if self._match(TokenType.EQ):
                 self._advance()  # consume '='
@@ -203,7 +248,9 @@ class Parser:
                             initial_value = self._parse_const_value()
                             self._expect(TokenType.RBRACKET)
 
-        return VarDecl(var_type, name, address, initial_value, tok.line, tok.column)
+        return VarDecl(
+            var_type, name, address, initial_value, tok.line, tok.column, initial_values
+        )
 
     def _parse_const_value(self) -> int:
         """Parse a numeric constant (decimal or hex)."""
@@ -216,6 +263,28 @@ class Parser:
             return int(tok.value[1:], 16)  # strip '$'
         else:
             raise ParseError(f"Expected numeric constant, got {tok.type.name}", tok)
+
+    @staticmethod
+    def _decode_string_token(tok: "Token") -> str:
+        """Decode a STRING token value to a plain Python string.
+
+        The lexer stores the raw quoted form including surrounding quotes.
+        This strips the outer quotes and unescapes "" → ".
+        """
+        raw = tok.value  # e.g. '"Hello ""world"""'
+        return raw[1:-1].replace('""', '"')
+
+    def _parse_set_directive(self) -> SetDirective:
+        """Parse: SET const_expr = (const_value | identifier)"""
+        tok = self._expect(TokenType.SET)
+        target = self._parse_const_value()
+        self._expect(TokenType.EQ)
+        if self._match(TokenType.IDENTIFIER):
+            val_tok = self._advance()
+            value: int | str = val_tok.value  # identifier name
+        else:
+            value = self._parse_const_value()
+        return SetDirective(target, value, tok.line, tok.column)
 
     # ------------------------------------------------------------------
     # PROC declaration
@@ -605,6 +674,11 @@ class Parser:
                 self._advance()
                 return Dereference(ident, tok.line, tok.column)
             return ident
+
+        elif tok.type == TokenType.STRING:
+            self._advance()
+            s = self._decode_string_token(tok)
+            return StringLiteral(s, tok.line, tok.column)
 
         elif tok.type == TokenType.LPAREN:
             self._advance()  # consume '('

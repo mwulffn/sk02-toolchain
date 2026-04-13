@@ -145,6 +145,16 @@ class ArrayAccess:
     resolved_type: Optional[Type] = field(default=None, compare=False)
 
 
+@dataclass
+class StringLiteral:
+    """String constant in expression context: "Hello" → anonymous BYTE ARRAY address."""
+
+    value: str  # decoded string (no surrounding quotes, "" unescaped)
+    line: int
+    column: int
+    resolved_type: Optional[Type] = field(default=None, compare=False)
+
+
 Expression = (
     NumberLiteral
     | CharConstant
@@ -154,6 +164,7 @@ Expression = (
     | FunctionCall
     | Dereference
     | ArrayAccess
+    | StringLiteral
 )
 
 
@@ -278,9 +289,10 @@ class VarDecl:
     type: Type
     name: str
     address: Optional[int]  # =addr placement
-    initial_value: Optional[int]  # =[value] initializer
+    initial_value: Optional[int]  # =[value] initializer for scalars
     line: int
     column: int
+    initial_values: Optional[list[int]] = field(default=None)  # array initializer
 
 
 @dataclass
@@ -323,6 +335,21 @@ Declaration = VarDecl | ProcDecl | FuncDecl
 
 
 # ---------------------------------------------------------------------------
+# Directives
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SetDirective:
+    """SET target_addr = value — pokes bytes into the output ROM at compile time."""
+
+    target_addr: int  # address to write to (numeric constant)
+    value: int | str  # int literal or identifier name (resolved to label at codegen)
+    line: int
+    column: int
+
+
+# ---------------------------------------------------------------------------
 # Top-level
 # ---------------------------------------------------------------------------
 
@@ -334,3 +361,4 @@ class Program:
     declarations: list[Declaration]
     line: int
     column: int
+    directives: list[SetDirective] = field(default_factory=list)

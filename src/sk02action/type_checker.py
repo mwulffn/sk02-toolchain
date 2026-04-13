@@ -29,7 +29,9 @@ from .ast_nodes import (
     ProcDecl,
     Program,
     ReturnStmt,
+    SetDirective,
     Statement,
+    StringLiteral,
     Type,
     UnaryOp,
     UntilLoop,
@@ -37,6 +39,24 @@ from .ast_nodes import (
     WhileLoop,
 )
 from .symbol_table import SymbolTable
+
+# Predeclared I/O intrinsics: name → (params, return_type_class | None)
+# Names are lowercase because the lexer normalizes identifiers.
+_INTRINSICS: list[tuple[str, list[str], str | None]] = [
+    ("gpioread", [], "BYTE"),
+    ("gpiowrite", ["BYTE"], None),
+    ("readx", [], "BYTE"),
+    ("ready", [], "BYTE"),
+    ("out0write", ["BYTE"], None),
+    ("out1write", ["BYTE"], None),
+    ("outwrite", ["BYTE", "BYTE"], None),
+    ("hwivalue", [], "BYTE"),
+    ("triggerhwi", [], None),
+    ("clearinterrupt", [], None),
+    ("interruptflag", [], "BYTE"),
+]
+
+_INTRINSIC_NAMES: frozenset[str] = frozenset(name for name, _, _ in _INTRINSICS)
 
 
 class SemanticError(Exception):
@@ -77,6 +97,20 @@ class TypeChecker:
 
     def __init__(self):
         self._st = SymbolTable()
+        self._register_intrinsics()
+
+    def _register_intrinsics(self) -> None:
+        """Pre-register all I/O intrinsics into the symbol table."""
+        for name, param_types, return_type_name in _INTRINSICS:
+            params = [
+                {"name": f"p{i}", "type": ByteType(0, 0)}
+                for i, _ in enumerate(param_types)
+            ]
+            if return_type_name == "BYTE":
+                return_type = ByteType(0, 0)
+            else:
+                return_type = None
+            self._st.declare_func(name, params=params, return_type=return_type)
 
     def check(self, program: Program) -> None:
         """Type-check the entire program."""
@@ -85,12 +119,24 @@ class TypeChecker:
             if isinstance(decl, VarDecl):
                 self._declare_var(decl)
             elif isinstance(decl, ProcDecl):
+                if decl.name in _INTRINSIC_NAMES:
+                    raise SemanticError(
+                        f"'{decl.name}' is a reserved intrinsic name",
+                        decl.line,
+                        decl.column,
+                    )
                 self._st.declare_func(
                     decl.name,
                     params=[{"name": p.name, "type": p.type} for p in decl.params],
                     return_type=None,
                 )
             elif isinstance(decl, FuncDecl):
+                if decl.name in _INTRINSIC_NAMES:
+                    raise SemanticError(
+                        f"'{decl.name}' is a reserved intrinsic name",
+                        decl.line,
+                        decl.column,
+                    )
                 self._st.declare_func(
                     decl.name,
                     params=[{"name": p.name, "type": p.type} for p in decl.params],
@@ -103,6 +149,10 @@ class TypeChecker:
                 self._check_proc(decl)
             elif isinstance(decl, FuncDecl):
                 self._check_func(decl)
+
+        # Third pass: validate SET directives
+        for directive in program.directives:
+            self._check_set_directive(directive)
 
     def _declare_var(self, decl: VarDecl) -> None:
         self._st.declare_var(
@@ -135,6 +185,22 @@ class TypeChecker:
     def _register_params(self, params: list[Parameter]) -> None:
         for p in params:
             self._st.declare_var(p.name, p.type, size=_type_size(p.type))
+
+    def _check_set_directive(self, directive: SetDirective) -> None:
+        if isinstance(directive.value, str):
+            name = directive.value
+            if self._st.resolve_func(name) is None and self._st.resolve(name) is None:
+                raise SemanticError(
+                    f"SET: undeclared identifier {name!r}",
+                    directive.line,
+                    directive.column,
+                )
+            if name in _INTRINSIC_NAMES:
+                raise SemanticError(
+                    f"SET: intrinsic {name!r} has no address (always inlined)",
+                    directive.line,
+                    directive.column,
+                )
 
     # ------------------------------------------------------------------
     # Statements
@@ -226,9 +292,7 @@ class TypeChecker:
                 expr.resolved_type = IntType(expr.line, expr.column)
             elif expr.op == "@":
                 # Address-of: produces a pointer to the operand's type
-                expr.resolved_type = PointerType(
-                    operand_type, expr.line, expr.column
-                )
+                expr.resolved_type = PointerType(operand_type, expr.line, expr.column)
             else:
                 expr.resolved_type = operand_type
             return expr.resolved_type
@@ -261,6 +325,18 @@ class TypeChecker:
                     expr.column,
                 )
             expr.resolved_type = ptr_type.base_type
+            return expr.resolved_type
+
+        elif isinstance(expr, StringLiteral):
+            if len(expr.value) > 255:
+                raise SemanticError(
+                    "String literal exceeds 255 characters",
+                    expr.line,
+                    expr.column,
+                )
+            expr.resolved_type = PointerType(
+                ByteType(expr.line, expr.column), expr.line, expr.column
+            )
             return expr.resolved_type
 
         elif isinstance(expr, FunctionCall):

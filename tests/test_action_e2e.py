@@ -315,6 +315,54 @@ class TestMultiplyDivide:
         assert cpu.halted
         assert cpu.A == 3
 
+    def test_multiply_card(self):
+        """300 * 200 = 60000 (16-bit multiply)."""
+        cpu = run_action(
+            "PROC Main()\n  CARD a, b, x\n  a = 300\n  b = 200\n  x = a * b\nRETURN"
+        )
+        assert cpu.halted
+        assert cpu.AB == 60000
+
+    def test_divide_card(self):
+        """1000 / 8 = 125 (16-bit divide)."""
+        cpu = run_action(
+            "PROC Main()\n  CARD a, b, x\n  a = 1000\n  b = 8\n  x = a / b\nRETURN"
+        )
+        assert cpu.halted
+        assert cpu.AB == 125
+
+    def test_divide_card_with_remainder(self):
+        """1000 / 7 = 142 (integer division)."""
+        cpu = run_action(
+            "PROC Main()\n  CARD a, b, x\n  a = 1000\n  b = 7\n  x = a / b\nRETURN"
+        )
+        assert cpu.halted
+        assert cpu.AB == 142
+
+    def test_modulo_card(self):
+        """1000 mod 7 = 6."""
+        cpu = run_action(
+            "PROC Main()\n  CARD a, b, x\n  a = 1000\n  b = 7\n  x = a MOD b\nRETURN"
+        )
+        assert cpu.halted
+        assert cpu.AB == 6
+
+    def test_multiply_byte_times_card(self):
+        """BYTE * CARD: 10 * 300 = 3000 (mixed-width, result is CARD)."""
+        cpu = run_action(
+            "PROC Main()\n  BYTE a\n  CARD b, x\n  a = 10\n  b = 300\n  x = a * b\nRETURN"
+        )
+        assert cpu.halted
+        assert cpu.AB == 3000
+
+    def test_divide_card_large(self):
+        """65000 / 1000 = 65 (large 16-bit dividend)."""
+        cpu = run_action(
+            "PROC Main()\n  CARD a, b, x\n  a = 65000\n  b = 1000\n  x = a / b\nRETURN"
+        )
+        assert cpu.halted
+        assert cpu.AB == 65
+
 
 # ===========================================================================
 # 16-bit FOR loops
@@ -564,3 +612,251 @@ class TestArray:
         )
         assert cpu.halted
         assert cpu.A == 77
+
+    def test_array_bracket_init_read(self):
+        """BYTE ARRAY with bracket initializer pre-populates memory."""
+        cpu = run_action(
+            "BYTE ARRAY d = [10 20 30]\n"
+            "BYTE result=[0]\n"
+            "PROC Main()\n"
+            "  BYTE i\n"
+            "  i = 1\n"
+            "  result = d(i)\n"
+            "RETURN"
+        )
+        assert cpu.halted
+        assert cpu.A == 20
+
+    def test_array_string_init_read_char(self):
+        """BYTE ARRAY with string initializer: index 1 is first char."""
+        cpu = run_action(
+            'BYTE ARRAY m = "AB"\n'
+            "BYTE result=[0]\n"
+            "PROC Main()\n"
+            "  BYTE i\n"
+            "  i = 1\n"
+            "  result = m(i)\n"
+            "RETURN"
+        )
+        assert cpu.halted
+        assert cpu.A == 65  # ord('A')
+
+    def test_array_string_init_read_length(self):
+        """BYTE ARRAY with string initializer: index 0 is the length byte."""
+        cpu = run_action(
+            'BYTE ARRAY m = "AB"\n'
+            "BYTE result=[0]\n"
+            "PROC Main()\n"
+            "  BYTE i\n"
+            "  i = 0\n"
+            "  result = m(i)\n"
+            "RETURN"
+        )
+        assert cpu.halted
+        assert cpu.A == 2  # length of "AB"
+
+
+# ===========================================================================
+# I/O Intrinsics
+# ===========================================================================
+
+
+def run_action_with_inputs(
+    source, *, x=0, y=0, gpio=0, interrupt=False, max_instructions=10000
+):
+    """Run Action! program with preset hardware input values."""
+    from simulator.cpu import CPU
+    from simulator.memory import Memory
+    from sk02_asm.assembler import Assembler
+
+    asm_source = compile_string(source)
+    assembler = Assembler(asm_source, 0x8000)
+    output, errors = assembler.assemble()
+    assert not errors, f"Assembly errors: {errors}"
+
+    memory = Memory()
+    for addr, byte in output.data.items():
+        memory.write_byte(addr, byte)
+    memory.x_input = x
+    memory.y_input = y
+    memory.gpio = gpio
+
+    cpu = CPU(memory)
+    cpu.interrupt = interrupt
+    cpu.run(max_instructions)
+    return cpu
+
+
+class TestIOIntrinsics:
+    """I/O intrinsics compile and execute correctly."""
+
+    def test_readx_reads_x_input(self):
+        """ReadX() reads the X input register."""
+        cpu = run_action_with_inputs(
+            "BYTE result=[0]\nPROC Main()\n  result = ReadX()\nRETURN",
+            x=42,
+        )
+        assert cpu.halted
+        assert cpu.A == 42
+
+    def test_ready_reads_y_input(self):
+        """ReadY() reads the Y input register."""
+        cpu = run_action_with_inputs(
+            "BYTE result=[0]\nPROC Main()\n  result = ReadY()\nRETURN",
+            y=77,
+        )
+        assert cpu.halted
+        assert cpu.A == 77
+
+    def test_gpioread_reads_gpio(self):
+        """GpioRead() reads the GPIO register."""
+        cpu = run_action_with_inputs(
+            "BYTE result=[0]\nPROC Main()\n  result = GpioRead()\nRETURN",
+            gpio=99,
+        )
+        assert cpu.halted
+        assert cpu.A == 99
+
+    def test_gpiowrite_writes_gpio(self):
+        """GpioWrite(val) writes to GPIO."""
+        cpu = run_action_with_inputs(
+            "PROC Main()\n  GpioWrite(55)\nRETURN",
+        )
+        assert cpu.halted
+        assert cpu.memory.gpio == 55
+
+    def test_out0write_writes_out0(self):
+        """Out0Write(val) writes to output display 0."""
+        cpu = run_action_with_inputs(
+            "PROC Main()\n  Out0Write(10)\nRETURN",
+        )
+        assert cpu.halted
+        assert cpu.memory.out_0 == 10
+
+    def test_out1write_writes_out1(self):
+        """Out1Write(val) writes to output display 1."""
+        cpu = run_action_with_inputs(
+            "PROC Main()\n  Out1Write(20)\nRETURN",
+        )
+        assert cpu.halted
+        assert cpu.memory.out_1 == 20
+
+    def test_outwrite_writes_both(self):
+        """OutWrite(lo, hi) writes lo to out_0 and hi to out_1."""
+        cpu = run_action_with_inputs(
+            "PROC Main()\n  OutWrite(3, 7)\nRETURN",
+        )
+        assert cpu.halted
+        assert cpu.memory.out_0 == 3
+        assert cpu.memory.out_1 == 7
+
+    def test_clearinterrupt_runs(self):
+        """ClearInterrupt() executes without error."""
+        cpu = run_action_with_inputs(
+            "PROC Main()\n  ClearInterrupt()\nRETURN",
+            interrupt=True,
+        )
+        assert cpu.halted
+        assert not cpu.interrupt
+
+    def test_interruptflag_returns_zero_when_clear(self):
+        """InterruptFlag() returns 0 when interrupt flag is not set."""
+        cpu = run_action_with_inputs(
+            "BYTE result=[0]\nPROC Main()\n  result = InterruptFlag()\nRETURN",
+            interrupt=False,
+        )
+        assert cpu.halted
+        assert cpu.A == 0
+
+    def test_interruptflag_returns_one_when_set(self):
+        """InterruptFlag() returns 1 when interrupt flag is set."""
+        cpu = run_action_with_inputs(
+            "BYTE result=[0]\nPROC Main()\n  result = InterruptFlag()\nRETURN",
+            interrupt=True,
+        )
+        assert cpu.halted
+        assert cpu.A == 1
+
+
+# ===========================================================================
+# SET directive end-to-end
+# ===========================================================================
+
+
+class TestSetDirectiveE2E:
+    """SET directive pokes bytes into the assembled binary."""
+
+    def test_set_pokes_reset_vector(self):
+        """SET $FFFE = Main writes Main's address into $FFFE..$FFFF."""
+        from sk02_asm.assembler import Assembler
+
+        source = "PROC Main()\nRETURN\nSET $FFFE = main"
+        asm_source = compile_string(source)
+        assembler = Assembler(asm_source, 0x8000)
+        output, errors = assembler.assemble()
+        assert not errors
+        lo = output.data.get(0xFFFE)
+        hi = output.data.get(0xFFFF)
+        assert lo is not None and hi is not None
+        addr = lo | (hi << 8)
+        assert 0x8000 <= addr <= 0xFFFF
+
+    def test_set_numeric_target_and_value(self):
+        """SET writes a numeric value to a numeric address in the ROM."""
+        from sk02_asm.assembler import Assembler
+
+        source = "PROC Main()\nRETURN\nSET $8200 = 255"
+        asm_source = compile_string(source)
+        assembler = Assembler(asm_source, 0x8000)
+        output, errors = assembler.assemble()
+        assert not errors
+        lo = output.data.get(0x8200)
+        hi = output.data.get(0x8201)
+        assert lo is not None
+        # 255 as WORD little-endian: lo=255, hi=0
+        assert lo == 255
+        assert hi == 0
+
+
+# ===========================================================================
+# String literal end-to-end
+# ===========================================================================
+
+
+class TestStringLiteralE2E:
+    """String literals in expressions allocate correct data at runtime."""
+
+    def test_string_literal_length_via_pointer(self):
+        """p = "Hi"; result = p^ — dereference yields length byte (2)."""
+        cpu = run_action(
+            "BYTE POINTER p\n"
+            "BYTE result=[0]\n"
+            'PROC Main()\n  p = "Hi"\n  result = p^\nRETURN'
+        )
+        assert cpu.halted
+        assert cpu.A == 2  # length of "Hi"
+
+    def test_two_string_literals_independent(self):
+        """Two string literals yield independent data; read different length bytes."""
+        cpu = run_action(
+            "BYTE POINTER p\n"
+            "BYTE POINTER q\n"
+            "BYTE result=[0]\n"
+            "PROC Main()\n"
+            '  p = "Hi"\n'  # length 2
+            '  q = "Hello"\n'  # length 5
+            "  result = p^\n"  # read length of "Hi"
+            "RETURN"
+        )
+        assert cpu.halted
+        assert cpu.A == 2  # length of "Hi"
+
+    def test_empty_string_literal_length_zero(self):
+        """p = ""; p^ yields 0 (empty string length byte)."""
+        cpu = run_action(
+            "BYTE POINTER p\n"
+            "BYTE result=[0]\n"
+            'PROC Main()\n  p = ""\n  result = p^\nRETURN'
+        )
+        assert cpu.halted
+        assert cpu.A == 0

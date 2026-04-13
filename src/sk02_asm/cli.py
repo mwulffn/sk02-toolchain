@@ -120,6 +120,7 @@ Examples:
     # Write binary / hex output
     if args.format == "hex":
         from .output import IntelHexWriter
+
         hex_output = IntelHexWriter()
         for addr, byte in sorted(asm_output.data.items()):
             hex_output.write_byte(addr, byte)

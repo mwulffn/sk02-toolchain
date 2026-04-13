@@ -29,6 +29,8 @@ from sk02action.ast_nodes import (
     ProcDecl,
     Program,
     ReturnStmt,
+    SetDirective,
+    StringLiteral,
     UnaryOp,
     VarDecl,
     WhileLoop,
@@ -582,11 +584,7 @@ class TestArrayParsing:
     def test_array_read_in_expression(self):
         """buf(i) in expression context becomes ArrayAccess."""
         prog = parse(
-            "BYTE ARRAY buf(10)\n"
-            "PROC Main()\n"
-            "  BYTE x, i\n"
-            "  x = buf(i)\n"
-            "RETURN"
+            "BYTE ARRAY buf(10)\nPROC Main()\n  BYTE x, i\n  x = buf(i)\nRETURN"
         )
         main = prog.declarations[1]
         stmt = main.body[0]
@@ -597,15 +595,156 @@ class TestArrayParsing:
 
     def test_array_write_as_target(self):
         """buf(i) = 42 parses as AssignmentStmt with ArrayAccess target."""
-        prog = parse(
-            "BYTE ARRAY buf(10)\n"
-            "PROC Main()\n"
-            "  BYTE i\n"
-            "  buf(i) = 42\n"
-            "RETURN"
-        )
+        prog = parse("BYTE ARRAY buf(10)\nPROC Main()\n  BYTE i\n  buf(i) = 42\nRETURN")
         main = prog.declarations[1]
         stmt = main.body[0]
         assert isinstance(stmt, AssignmentStmt)
         assert isinstance(stmt.target, ArrayAccess)
         assert stmt.target.array_name == "buf"
+
+    def test_array_bracket_initializer_byte(self):
+        """BYTE ARRAY digits = [0 1 2 3] parses with size and initial_values."""
+        prog = parse("BYTE ARRAY digits = [0 1 2 3]\nPROC Main()\nRETURN")
+        decl = prog.declarations[0]
+        assert isinstance(decl, VarDecl)
+        assert isinstance(decl.type, ArrayType)
+        assert isinstance(decl.type.base_type, ByteType)
+        assert decl.type.size == 4
+        assert decl.initial_values == [0, 1, 2, 3]
+
+    def test_array_bracket_initializer_card(self):
+        """CARD ARRAY tbl = [100 200 300] parses with size 3."""
+        prog = parse("CARD ARRAY tbl = [100 200 300]\nPROC Main()\nRETURN")
+        decl = prog.declarations[0]
+        assert isinstance(decl.type, ArrayType)
+        assert isinstance(decl.type.base_type, CardType)
+        assert decl.type.size == 3
+        assert decl.initial_values == [100, 200, 300]
+
+    def test_array_bracket_initializer_hex(self):
+        """BYTE ARRAY data = [$FF $00 $AB] parses hex values correctly."""
+        prog = parse("BYTE ARRAY data = [$FF $00 $AB]\nPROC Main()\nRETURN")
+        decl = prog.declarations[0]
+        assert decl.type.size == 3
+        assert decl.initial_values == [255, 0, 171]
+
+    def test_array_string_initializer(self):
+        """BYTE ARRAY msg = "Hi" stores length byte then char bytes."""
+        prog = parse('BYTE ARRAY msg = "Hi"\nPROC Main()\nRETURN')
+        decl = prog.declarations[0]
+        assert isinstance(decl, VarDecl)
+        assert isinstance(decl.type, ArrayType)
+        assert decl.type.size == 3  # length byte + 2 chars
+        assert decl.initial_values == [2, 72, 105]  # len=2, 'H'=72, 'i'=105
+
+    def test_array_string_initializer_empty(self):
+        """BYTE ARRAY e = "" stores just the zero length byte."""
+        prog = parse('BYTE ARRAY e = ""\nPROC Main()\nRETURN')
+        decl = prog.declarations[0]
+        assert decl.type.size == 1
+        assert decl.initial_values == [0]
+
+    def test_array_string_initializer_255_chars_ok(self):
+        """BYTE ARRAY of exactly 255 chars passes."""
+        s = "X" * 255
+        prog = parse(f'BYTE ARRAY msg = "{s}"\nPROC Main()\nRETURN')
+        decl = prog.declarations[0]
+        assert decl.type.size == 256  # 1 length byte + 255 chars
+
+    def test_array_string_initializer_too_long_error(self):
+        """BYTE ARRAY with > 255 char string raises ParseError."""
+        s = "X" * 256
+        with pytest.raises(ParseError, match="too long"):
+            parse(f'BYTE ARRAY msg = "{s}"\nPROC Main()\nRETURN')
+
+
+# ===========================================================================
+# SET directive
+# ===========================================================================
+
+
+class TestParseSetDirective:
+    """SET directives parse into Program.directives."""
+
+    def test_set_hex_target_numeric_value(self):
+        """SET $FFFE = 42 is stored as a SetDirective."""
+        prog = parse("PROC Main()\nRETURN\nSET $FFFE = 42")
+        assert len(prog.directives) == 1
+        d = prog.directives[0]
+        assert isinstance(d, SetDirective)
+        assert d.target_addr == 0xFFFE
+        assert d.value == 42
+
+    def test_set_decimal_target_zero(self):
+        """SET 100 = 0 parses decimal target and numeric value."""
+        prog = parse("PROC Main()\nRETURN\nSET 100 = 0")
+        assert len(prog.directives) == 1
+        d = prog.directives[0]
+        assert d.target_addr == 100
+        assert d.value == 0
+
+    def test_set_identifier_value(self):
+        """SET $FFFE = main stores the identifier as a string."""
+        prog = parse("PROC Main()\nRETURN\nSET $FFFE = main")
+        assert len(prog.directives) == 1
+        d = prog.directives[0]
+        assert d.target_addr == 0xFFFE
+        assert d.value == "main"
+
+    def test_set_multiple_directives(self):
+        """Multiple SET directives all appear in prog.directives."""
+        prog = parse("PROC Main()\nRETURN\nSET $FFFE = main\nSET 100 = 0")
+        assert len(prog.directives) == 2
+        assert prog.directives[0].target_addr == 0xFFFE
+        assert prog.directives[1].target_addr == 100
+
+    def test_set_does_not_appear_in_declarations(self):
+        """SET directive is not added to prog.declarations."""
+        prog = parse("PROC Main()\nRETURN\nSET $FFFE = main")
+        # Only the PROC is a declaration
+        assert len(prog.declarations) == 1
+        assert isinstance(prog.declarations[0], ProcDecl)
+
+
+# ===========================================================================
+# String literals in expressions
+# ===========================================================================
+
+
+class TestStringLiteralExpr:
+    """String constants in expression context parse as StringLiteral."""
+
+    def test_string_literal_in_assignment(self):
+        """p = "Hello" parses RHS as StringLiteral."""
+        prog = parse('BYTE POINTER p\nPROC Main()\n  p = "Hello"\nRETURN')
+        main = prog.declarations[1]
+        stmt = main.body[0]
+        assert isinstance(stmt, AssignmentStmt)
+        assert isinstance(stmt.value, StringLiteral)
+        assert stmt.value.value == "Hello"
+
+    def test_string_literal_empty(self):
+        """p = "" parses as StringLiteral with empty value."""
+        prog = parse('BYTE POINTER p\nPROC Main()\n  p = ""\nRETURN')
+        stmt = prog.declarations[1].body[0]
+        assert isinstance(stmt.value, StringLiteral)
+        assert stmt.value.value == ""
+
+    def test_string_literal_with_escaped_quote(self):
+        # Action! escapes a literal quote as "" inside a string.
+        # "say ""hi""" unescapes to: say "hi"
+        prog = parse('BYTE POINTER p\nPROC Main()\n  p = "say ""hi"""\nRETURN')
+        stmt = prog.declarations[1].body[0]
+        assert isinstance(stmt.value, StringLiteral)
+        assert stmt.value.value == 'say "hi"'
+
+    def test_string_literal_as_argument(self):
+        """f("msg") passes string literal as argument."""
+        prog = parse(
+            'PROC Print(BYTE POINTER s)\nRETURN\nPROC Main()\n  Print("msg")\nRETURN'
+        )
+        main = prog.declarations[1]
+        stmt = main.body[0]
+        assert isinstance(stmt, ProcCall)
+        assert isinstance(stmt.arguments[0], StringLiteral)
+        assert stmt.arguments[0].value == "msg"

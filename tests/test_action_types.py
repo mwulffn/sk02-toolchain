@@ -12,6 +12,7 @@ from sk02action.ast_nodes import (
     FunctionCall,
     IntType,
     PointerType,
+    StringLiteral,
 )
 from sk02action.lexer import Lexer
 from sk02action.parser import Parser
@@ -196,13 +197,7 @@ class TestPointerTypes:
 
     def test_address_of_type(self):
         """@x where x:BYTE produces PointerType(ByteType)."""
-        ast = check(
-            "BYTE x\n"
-            "BYTE POINTER bp\n"
-            "PROC Main()\n"
-            "  bp = @x\n"
-            "RETURN"
-        )
+        ast = check("BYTE x\nBYTE POINTER bp\nPROC Main()\n  bp = @x\nRETURN")
         main = ast.declarations[2]
         stmt = main.body[0]
         assert isinstance(stmt.value.resolved_type, PointerType)
@@ -210,26 +205,14 @@ class TestPointerTypes:
 
     def test_dereference_type(self):
         """bp^ where bp:BYTE POINTER produces ByteType."""
-        ast = check(
-            "BYTE POINTER bp\n"
-            "PROC Main()\n"
-            "  BYTE x\n"
-            "  x = bp^\n"
-            "RETURN"
-        )
+        ast = check("BYTE POINTER bp\nPROC Main()\n  BYTE x\n  x = bp^\nRETURN")
         main = ast.declarations[1]
         stmt = main.body[0]
         assert isinstance(stmt.value.resolved_type, ByteType)
 
     def test_card_pointer_deref_type(self):
         """cp^ where cp:CARD POINTER produces CardType."""
-        ast = check(
-            "CARD POINTER cp\n"
-            "PROC Main()\n"
-            "  CARD x\n"
-            "  x = cp^\n"
-            "RETURN"
-        )
+        ast = check("CARD POINTER cp\nPROC Main()\n  CARD x\n  x = cp^\nRETURN")
         main = ast.declarations[1]
         stmt = main.body[0]
         assert isinstance(stmt.value.resolved_type, CardType)
@@ -254,11 +237,7 @@ class TestArrayTypes:
     def test_byte_array_access_type(self):
         """buf(i) where buf:BYTE ARRAY produces ByteType."""
         ast = check(
-            "BYTE ARRAY buf(10)\n"
-            "PROC Main()\n"
-            "  BYTE x, i\n"
-            "  x = buf(i)\n"
-            "RETURN"
+            "BYTE ARRAY buf(10)\nPROC Main()\n  BYTE x, i\n  x = buf(i)\nRETURN"
         )
         main = ast.declarations[1]
         stmt = main.body[0]
@@ -267,12 +246,157 @@ class TestArrayTypes:
     def test_card_array_access_type(self):
         """tbl(i) where tbl:CARD ARRAY produces CardType."""
         ast = check(
-            "CARD ARRAY tbl(10)\n"
-            "PROC Main()\n"
-            "  CARD x, i\n"
-            "  x = tbl(i)\n"
-            "RETURN"
+            "CARD ARRAY tbl(10)\nPROC Main()\n  CARD x, i\n  x = tbl(i)\nRETURN"
         )
         main = ast.declarations[1]
         stmt = main.body[0]
         assert isinstance(stmt.value.resolved_type, CardType)
+
+
+# ===========================================================================
+# I/O Intrinsics
+# ===========================================================================
+
+
+class TestIntrinsics:
+    """I/O intrinsics are predeclared and type-check correctly."""
+
+    def test_readx_callable_without_declaration(self):
+        """ReadX() is predeclared — no SemanticError."""
+        check("PROC Main()\n  BYTE x\n  x = ReadX()\nRETURN")
+
+    def test_ready_callable_without_declaration(self):
+        """ReadY() is predeclared — no SemanticError."""
+        check("PROC Main()\n  BYTE y\n  y = ReadY()\nRETURN")
+
+    def test_gpioread_callable_without_declaration(self):
+        """GpioRead() is predeclared — no SemanticError."""
+        check("PROC Main()\n  BYTE g\n  g = GpioRead()\nRETURN")
+
+    def test_gpiowrite_callable_without_declaration(self):
+        """GpioWrite(val) is predeclared — no SemanticError."""
+        check("PROC Main()\n  GpioWrite(42)\nRETURN")
+
+    def test_out0write_callable_without_declaration(self):
+        """Out0Write(val) is predeclared — no SemanticError."""
+        check("PROC Main()\n  Out0Write(1)\nRETURN")
+
+    def test_out1write_callable_without_declaration(self):
+        """Out1Write(val) is predeclared — no SemanticError."""
+        check("PROC Main()\n  Out1Write(2)\nRETURN")
+
+    def test_outwrite_callable_without_declaration(self):
+        """OutWrite(lo, hi) is predeclared — no SemanticError."""
+        check("PROC Main()\n  OutWrite(1, 2)\nRETURN")
+
+    def test_hwivalue_callable_without_declaration(self):
+        """HwiValue() is predeclared — no SemanticError."""
+        check("PROC Main()\n  BYTE v\n  v = HwiValue()\nRETURN")
+
+    def test_triggerhwi_callable_without_declaration(self):
+        """TriggerHwi() is predeclared — no SemanticError."""
+        check("PROC Main()\n  TriggerHwi()\nRETURN")
+
+    def test_clearinterrupt_callable_without_declaration(self):
+        """ClearInterrupt() is predeclared — no SemanticError."""
+        check("PROC Main()\n  ClearInterrupt()\nRETURN")
+
+    def test_interruptflag_callable_without_declaration(self):
+        """InterruptFlag() is predeclared — no SemanticError."""
+        check("PROC Main()\n  BYTE f\n  f = InterruptFlag()\nRETURN")
+
+    def test_readx_returns_byte(self):
+        """ReadX() return type is ByteType."""
+        ast = check("PROC Main()\n  BYTE x\n  x = ReadX()\nRETURN")
+        stmt = ast.declarations[0].body[0]
+        assert isinstance(stmt.value.resolved_type, ByteType)
+
+    def test_gpioread_returns_byte(self):
+        """GpioRead() return type is ByteType."""
+        ast = check("PROC Main()\n  BYTE g\n  g = GpioRead()\nRETURN")
+        stmt = ast.declarations[0].body[0]
+        assert isinstance(stmt.value.resolved_type, ByteType)
+
+    def test_wrong_arg_count_intrinsic(self):
+        """Calling ReadX(1) raises SemanticError."""
+        with pytest.raises(SemanticError):
+            check("PROC Main()\n  BYTE x\n  x = ReadX(1)\nRETURN")
+
+    def test_gpiowrite_wrong_arg_count(self):
+        """Calling GpioWrite() with no args raises SemanticError."""
+        with pytest.raises(SemanticError):
+            check("PROC Main()\n  GpioWrite()\nRETURN")
+
+    def test_outwrite_wrong_arg_count(self):
+        """Calling OutWrite(1) with only one arg raises SemanticError."""
+        with pytest.raises(SemanticError):
+            check("PROC Main()\n  OutWrite(1)\nRETURN")
+
+    def test_user_proc_shadowing_intrinsic_errors(self):
+        """Declaring PROC with an intrinsic name raises SemanticError."""
+        with pytest.raises(SemanticError, match="reserved"):
+            check("PROC ReadX()\nRETURN\nPROC Main()\nRETURN")
+
+    def test_user_func_shadowing_intrinsic_errors(self):
+        """Declaring FUNC with an intrinsic name raises SemanticError."""
+        with pytest.raises(SemanticError, match="reserved"):
+            check("BYTE FUNC GpioRead()\nRETURN(0)\nPROC Main()\nRETURN")
+
+
+# ===========================================================================
+# SET directive type checking
+# ===========================================================================
+
+
+class TestSetDirectiveTypes:
+    """SET directive validates identifier references."""
+
+    def test_set_numeric_value_ok(self):
+        """SET with a numeric value requires no identifier lookup."""
+        check("PROC Main()\nRETURN\nSET $FFFE = 42")
+
+    def test_set_declared_proc_ok(self):
+        """SET with a declared PROC name passes type checking."""
+        check("PROC Main()\nRETURN\nSET $FFFE = main")
+
+    def test_set_undeclared_identifier_error(self):
+        """SET with an undeclared name raises SemanticError."""
+        with pytest.raises(SemanticError):
+            check("PROC Main()\nRETURN\nSET $FFFE = undeclared_func")
+
+    def test_set_intrinsic_identifier_error(self):
+        """SET with an intrinsic name raises SemanticError (no label emitted)."""
+        with pytest.raises(SemanticError, match="intrinsic"):
+            check("PROC Main()\nRETURN\nSET $FFFE = ReadX")
+
+
+# ===========================================================================
+# String literal type checking
+# ===========================================================================
+
+
+class TestStringLiteralTypes:
+    """String literals in expressions type as PointerType(ByteType)."""
+
+    def test_string_literal_types_to_pointer(self):
+        """p = "Hi" — RHS resolves to PointerType(ByteType)."""
+        ast = check('BYTE POINTER p\nPROC Main()\n  p = "Hi"\nRETURN')
+        stmt = ast.declarations[1].body[0]
+        assert isinstance(stmt.value, StringLiteral)
+        assert isinstance(stmt.value.resolved_type, PointerType)
+        assert isinstance(stmt.value.resolved_type.base_type, ByteType)
+
+    def test_string_literal_too_long_error(self):
+        """String literal longer than 255 chars raises SemanticError."""
+        long_str = "A" * 256
+        with pytest.raises(SemanticError):
+            check(f'BYTE POINTER p\nPROC Main()\n  p = "{long_str}"\nRETURN')
+
+    def test_string_literal_255_chars_ok(self):
+        """String literal of exactly 255 chars passes type checking."""
+        s = "X" * 255
+        check(f'BYTE POINTER p\nPROC Main()\n  p = "{s}"\nRETURN')
+
+    def test_empty_string_ok(self):
+        """Empty string literal passes type checking."""
+        check('BYTE POINTER p\nPROC Main()\n  p = ""\nRETURN')

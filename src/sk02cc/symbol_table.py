@@ -32,7 +32,9 @@ class SymbolTable:
         self.current_function = func_name
         self.local_vars = {}
 
-    def declare_local(self, name: str, typ: Type, size: int, is_param: bool = False) -> None:
+    def declare_local(
+        self, name: str, typ: Type, size: int, is_param: bool = False
+    ) -> None:
         info: VarInfo = {"type": typ, "size": size}
         if is_param:
             info["is_param"] = True

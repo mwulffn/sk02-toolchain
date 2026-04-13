@@ -367,34 +367,17 @@ class TestPointerCodegen:
 
     def test_address_of_emits_set_ab(self):
         """@x emits SET_AB #_x (loads address of x into AB)."""
-        lines = asm_lines(
-            "BYTE x\n"
-            "BYTE POINTER bp\n"
-            "PROC Main()\n"
-            "  bp = @x\n"
-            "RETURN"
-        )
+        lines = asm_lines("BYTE x\nBYTE POINTER bp\nPROC Main()\n  bp = @x\nRETURN")
         assert any(line.startswith("SET_AB #_x") for line in lines)
 
     def test_deref_read_byte(self):
         """bp^ read emits LOAD_A_CD (indirect byte load via CD)."""
-        lines = asm_lines(
-            "BYTE POINTER bp\n"
-            "PROC Main()\n"
-            "  BYTE x\n"
-            "  x = bp^\n"
-            "RETURN"
-        )
+        lines = asm_lines("BYTE POINTER bp\nPROC Main()\n  BYTE x\n  x = bp^\nRETURN")
         assert "LOAD_A_CD" in lines
 
     def test_deref_write_byte(self):
         """bp^ = 42 emits STORE_A_GH (indirect byte store via GH)."""
-        lines = asm_lines(
-            "BYTE POINTER bp\n"
-            "PROC Main()\n"
-            "  bp^ = 42\n"
-            "RETURN"
-        )
+        lines = asm_lines("BYTE POINTER bp\nPROC Main()\n  bp^ = 42\nRETURN")
         assert "STORE_A_GH" in lines
 
     def test_pointer_var_stored_as_word(self):
@@ -419,21 +402,163 @@ class TestArrayCodegen:
     def test_array_read_emits_load_a_cd(self):
         """buf(i) read emits LOAD_A_CD for BYTE array."""
         lines = asm_lines(
-            "BYTE ARRAY buf(10)\n"
-            "PROC Main()\n"
-            "  BYTE x, i\n"
-            "  x = buf(i)\n"
-            "RETURN"
+            "BYTE ARRAY buf(10)\nPROC Main()\n  BYTE x, i\n  x = buf(i)\nRETURN"
         )
         assert "LOAD_A_CD" in lines
 
     def test_array_write_emits_store_a_gh(self):
         """buf(i) = 42 emits STORE_A_GH for BYTE array."""
         lines = asm_lines(
-            "BYTE ARRAY buf(10)\n"
-            "PROC Main()\n"
-            "  BYTE i\n"
-            "  buf(i) = 42\n"
-            "RETURN"
+            "BYTE ARRAY buf(10)\nPROC Main()\n  BYTE i\n  buf(i) = 42\nRETURN"
         )
         assert "STORE_A_GH" in lines
+
+    def test_array_bracket_init_emits_data(self):
+        """BYTE ARRAY d = [10 20 30] emits .BYTE 10, 20, 30 in data section."""
+        text = asm_text("BYTE ARRAY d = [10 20 30]\nPROC Main()\nRETURN")
+        assert ".BYTE 10, 20, 30" in text
+
+    def test_array_string_init_emits_data(self):
+        """BYTE ARRAY m = "Hi" emits .BYTE 2, 72, 105 (len byte + chars)."""
+        text = asm_text('BYTE ARRAY m = "Hi"\nPROC Main()\nRETURN')
+        assert ".BYTE 2, 72, 105" in text
+
+    def test_card_array_bracket_init_emits_word(self):
+        """CARD ARRAY t = [1000 2000] emits .WORD 1000, 2000."""
+        text = asm_text("CARD ARRAY t = [1000 2000]\nPROC Main()\nRETURN")
+        assert ".WORD 1000, 2000" in text
+
+
+# ===========================================================================
+# I/O Intrinsics
+# ===========================================================================
+
+
+class TestIOIntrinsics:
+    """I/O intrinsics emit inline instructions, not GOSUB."""
+
+    def test_readx_emits_inline(self):
+        """ReadX() emits X>A, no GOSUB."""
+        lines = asm_lines("PROC Main()\n  BYTE x\n  x = ReadX()\nRETURN")
+        assert "X>A" in lines
+        assert not any("GOSUB" in l and "readx" in l.lower() for l in lines)
+
+    def test_ready_emits_inline(self):
+        """ReadY() emits Y>A, no GOSUB."""
+        lines = asm_lines("PROC Main()\n  BYTE y\n  y = ReadY()\nRETURN")
+        assert "Y>A" in lines
+        assert not any("GOSUB" in l and "ready" in l.lower() for l in lines)
+
+    def test_gpioread_emits_inline(self):
+        """GpioRead() emits GPIO>A, no GOSUB."""
+        lines = asm_lines("PROC Main()\n  BYTE g\n  g = GpioRead()\nRETURN")
+        assert "GPIO>A" in lines
+        assert not any("GOSUB" in l and "gpioread" in l.lower() for l in lines)
+
+    def test_gpiowrite_emits_inline(self):
+        """GpioWrite(42) emits SET_A #42 then A>GPIO, no GOSUB."""
+        lines = asm_lines("PROC Main()\n  GpioWrite(42)\nRETURN")
+        assert "A>GPIO" in lines
+        assert not any("GOSUB" in l and "gpiowrite" in l.lower() for l in lines)
+
+    def test_out0write_emits_inline(self):
+        """Out0Write(5) emits A>OUT_0, no GOSUB."""
+        lines = asm_lines("PROC Main()\n  Out0Write(5)\nRETURN")
+        assert "A>OUT_0" in lines
+        assert not any("GOSUB" in l and "out0" in l.lower() for l in lines)
+
+    def test_out1write_emits_inline(self):
+        """Out1Write(7) emits A>OUT_1, no GOSUB."""
+        lines = asm_lines("PROC Main()\n  Out1Write(7)\nRETURN")
+        assert "A>OUT_1" in lines
+        assert not any("GOSUB" in l and "out1" in l.lower() for l in lines)
+
+    def test_outwrite_emits_inline(self):
+        """OutWrite(3, 4) emits AB>OUT, no GOSUB."""
+        lines = asm_lines("PROC Main()\n  OutWrite(3, 4)\nRETURN")
+        assert "AB>OUT" in lines
+        assert not any("GOSUB" in l and "outwrite" in l.lower() for l in lines)
+
+    def test_clearinterrupt_emits_inline(self):
+        """ClearInterrupt() emits CLEAR_INTER, no GOSUB."""
+        lines = asm_lines("PROC Main()\n  ClearInterrupt()\nRETURN")
+        assert "CLEAR_INTER" in lines
+        assert not any("GOSUB" in l and "clear" in l.lower() for l in lines)
+
+    def test_interruptflag_emits_inline(self):
+        """InterruptFlag() emits JMP_INTER-based sequence, no GOSUB."""
+        lines = asm_lines("PROC Main()\n  BYTE f\n  f = InterruptFlag()\nRETURN")
+        assert any(l.startswith("JMP_INTER") for l in lines)
+        assert not any("GOSUB" in l and "interrupt" in l.lower() for l in lines)
+
+
+# ===========================================================================
+# SET directive codegen
+# ===========================================================================
+
+
+class TestSetDirectiveCodegen:
+    """SET directive emits .ORG + .WORD at the end of the output."""
+
+    def test_set_emits_org_and_word_for_label(self):
+        """SET $FFFE = Main → .ORG $FFFE + .WORD _main in assembly."""
+        text = asm_text("PROC Main()\nRETURN\nSET $FFFE = main")
+        assert ".ORG $FFFE" in text
+        assert ".WORD _main" in text
+
+    def test_set_emits_org_and_word_for_numeric(self):
+        """SET 100 = 42 → .ORG $0064 + .WORD 42 in assembly."""
+        text = asm_text("PROC Main()\nRETURN\nSET 100 = 42")
+        assert ".ORG $0064" in text
+        assert ".WORD 42" in text
+
+    def test_set_appears_after_data_section(self):
+        """SET directives come after the data section comment."""
+        text = asm_text("PROC Main()\nRETURN\nSET $FFFE = main")
+        data_pos = text.find("Data section")
+        org_pos = text.find(".ORG $FFFE")
+        assert data_pos != -1 and org_pos != -1
+        assert org_pos > data_pos
+
+    def test_multiple_set_directives_all_emitted(self):
+        """Two SET directives both appear in output."""
+        text = asm_text("PROC Main()\nRETURN\nSET $FFFE = main\nSET $FFFC = 0")
+        assert ".ORG $FFFE" in text
+        assert ".ORG $FFFC" in text
+
+
+# ===========================================================================
+# String literal codegen
+# ===========================================================================
+
+
+class TestStringLiteralCodegen:
+    """String literals in expressions allocate anonymous BYTE ARRAYs."""
+
+    def test_string_literal_emits_set_ab(self):
+        """p = "Hi" emits SET_AB #_str_0."""
+        lines = asm_lines('BYTE POINTER p\nPROC Main()\n  p = "Hi"\nRETURN')
+        assert any("SET_AB #_str_0" in line for line in lines)
+
+    def test_string_literal_data_section_length_prefix(self):
+        """String literal data: length byte followed by char bytes."""
+        text = asm_text('BYTE POINTER p\nPROC Main()\n  p = "Hi"\nRETURN')
+        # "Hi" → [2, 72, 105]
+        assert "_str_0:" in text
+        assert ".BYTE 2, 72, 105" in text
+
+    def test_two_string_literals_get_distinct_labels(self):
+        """Two distinct string literals emit _str_0 and _str_1."""
+        text = asm_text(
+            "BYTE POINTER p\n"
+            "BYTE POINTER q\n"
+            'PROC Main()\n  p = "Hi"\n  q = "Bye"\nRETURN'
+        )
+        assert "_str_0:" in text
+        assert "_str_1:" in text
+
+    def test_empty_string_literal_emits_length_zero(self):
+        """Empty string literal data: just the zero length byte."""
+        text = asm_text('BYTE POINTER p\nPROC Main()\n  p = ""\nRETURN')
+        assert "_str_0:" in text
+        assert ".BYTE 0" in text

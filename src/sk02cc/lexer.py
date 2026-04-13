@@ -7,45 +7,45 @@ from .tokens import KEYWORDS, Token, TokenType
 _OPERATORS: list[tuple[str, TokenType]] = [
     ("<<=", TokenType.LSHIFT_ASSIGN),
     (">>=", TokenType.RSHIFT_ASSIGN),
-    ("++",  TokenType.INC),
-    ("--",  TokenType.DEC),
-    ("==",  TokenType.EQ),
-    ("!=",  TokenType.NE),
-    ("<=",  TokenType.LE),
-    (">=",  TokenType.GE),
-    ("<<",  TokenType.LSHIFT),
-    (">>",  TokenType.RSHIFT),
-    ("&&",  TokenType.LAND),
-    ("||",  TokenType.LOR),
-    ("+=",  TokenType.PLUS_ASSIGN),
-    ("-=",  TokenType.MINUS_ASSIGN),
-    ("*=",  TokenType.STAR_ASSIGN),
-    ("/=",  TokenType.SLASH_ASSIGN),
-    ("%=",  TokenType.PERCENT_ASSIGN),
-    ("&=",  TokenType.AND_ASSIGN),
-    ("|=",  TokenType.OR_ASSIGN),
-    ("^=",  TokenType.XOR_ASSIGN),
-    ("+",   TokenType.PLUS),
-    ("-",   TokenType.MINUS),
-    ("*",   TokenType.STAR),
-    ("/",   TokenType.SLASH),
-    ("%",   TokenType.PERCENT),
-    ("&",   TokenType.AMPERSAND),
-    ("|",   TokenType.PIPE),
-    ("^",   TokenType.CARET),
-    ("~",   TokenType.TILDE),
-    ("!",   TokenType.LNOT),
-    ("=",   TokenType.ASSIGN),
-    ("<",   TokenType.LT),
-    (">",   TokenType.GT),
-    ("(",   TokenType.LPAREN),
-    (")",   TokenType.RPAREN),
-    ("{",   TokenType.LBRACE),
-    ("}",   TokenType.RBRACE),
-    ("[",   TokenType.LBRACKET),
-    ("]",   TokenType.RBRACKET),
-    (";",   TokenType.SEMICOLON),
-    (",",   TokenType.COMMA),
+    ("++", TokenType.INC),
+    ("--", TokenType.DEC),
+    ("==", TokenType.EQ),
+    ("!=", TokenType.NE),
+    ("<=", TokenType.LE),
+    (">=", TokenType.GE),
+    ("<<", TokenType.LSHIFT),
+    (">>", TokenType.RSHIFT),
+    ("&&", TokenType.LAND),
+    ("||", TokenType.LOR),
+    ("+=", TokenType.PLUS_ASSIGN),
+    ("-=", TokenType.MINUS_ASSIGN),
+    ("*=", TokenType.STAR_ASSIGN),
+    ("/=", TokenType.SLASH_ASSIGN),
+    ("%=", TokenType.PERCENT_ASSIGN),
+    ("&=", TokenType.AND_ASSIGN),
+    ("|=", TokenType.OR_ASSIGN),
+    ("^=", TokenType.XOR_ASSIGN),
+    ("+", TokenType.PLUS),
+    ("-", TokenType.MINUS),
+    ("*", TokenType.STAR),
+    ("/", TokenType.SLASH),
+    ("%", TokenType.PERCENT),
+    ("&", TokenType.AMPERSAND),
+    ("|", TokenType.PIPE),
+    ("^", TokenType.CARET),
+    ("~", TokenType.TILDE),
+    ("!", TokenType.LNOT),
+    ("=", TokenType.ASSIGN),
+    ("<", TokenType.LT),
+    (">", TokenType.GT),
+    ("(", TokenType.LPAREN),
+    (")", TokenType.RPAREN),
+    ("{", TokenType.LBRACE),
+    ("}", TokenType.RBRACE),
+    ("[", TokenType.LBRACKET),
+    ("]", TokenType.RBRACKET),
+    (";", TokenType.SEMICOLON),
+    (",", TokenType.COMMA),
 ]
 
 
@@ -122,13 +122,17 @@ class Lexer:
         if self.current_char() == "0" and self.peek_char() in "xX":
             self.advance()  # skip 0
             self.advance()  # skip x/X
-            while self.current_char() and self.current_char() in "0123456789abcdefABCDEF":
+            while (
+                self.current_char() and self.current_char() in "0123456789abcdefABCDEF"
+            ):
                 self.advance()
         else:
             while self.current_char() and self.current_char().isdigit():
                 self.advance()
 
-        return Token(TokenType.NUMBER, self.source[start_pos:self.pos], start_line, start_col)
+        return Token(
+            TokenType.NUMBER, self.source[start_pos : self.pos], start_line, start_col
+        )
 
     def read_char_literal(self) -> Token:
         """Read character literal like 'A'."""
@@ -194,7 +198,7 @@ class Lexer:
         ):
             self.advance()
 
-        ident = self.source[start_pos:self.pos]
+        ident = self.source[start_pos : self.pos]
         token_type = KEYWORDS.get(ident, TokenType.IDENTIFIER)
         return Token(token_type, ident, start_line, start_col)
 
@@ -243,14 +247,18 @@ class Lexer:
                 matched = False
                 for op_str, op_type in _OPERATORS:
                     end = self.pos + len(op_str)
-                    if self.source[self.pos:end] == op_str:
-                        self.tokens.append(Token(op_type, op_str, start_line, start_col))
+                    if self.source[self.pos : end] == op_str:
+                        self.tokens.append(
+                            Token(op_type, op_str, start_line, start_col)
+                        )
                         for _ in op_str:
                             self.advance()
                         matched = True
                         break
                 if not matched:
-                    raise LexerError(f"Unexpected character: {ch!r}", start_line, start_col)
+                    raise LexerError(
+                        f"Unexpected character: {ch!r}", start_line, start_col
+                    )
 
         # Add EOF token
         self.tokens.append(Token(TokenType.EOF, "", self.line, self.column))

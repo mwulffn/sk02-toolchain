@@ -887,6 +887,7 @@ class TestErrors:
     def test_asm_syntax_error_is_assembly_error_not_builtin(self):
         """AsmSyntaxError must not be caught by bare 'except SyntaxError' (builtin)."""
         from sk02_asm.errors import AssemblyError
+
         err = AsmSyntaxError("bad syntax", line_num=1)
         assert isinstance(err, AssemblyError)
         # Must NOT be the Python builtin SyntaxError

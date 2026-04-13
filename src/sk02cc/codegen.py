@@ -116,7 +116,9 @@ class CodeGenerator:
                 # Array name decays to pointer — emit base address into the
                 # requested wide register (AB or CD) so callers that need the
                 # address in CD (e.g. second pointer argument) work correctly.
-                target_reg = result_reg if result_reg in ("AB", "CD", "EF", "GH") else "AB"
+                target_reg = (
+                    result_reg if result_reg in ("AB", "CD", "EF", "GH") else "AB"
+                )
                 self.emit(f"    SET_{target_reg} #{label}")
             elif var_info["size"] == 1:
                 self.emit(f"    LOAD_A {label}")
@@ -386,8 +388,12 @@ class CodeGenerator:
           4. If same sign → CMP/CMP_16 gives correct unsigned ordering.
         """
         a_pos = self.new_label("sgn_a_pos")
-        diff_a_neg = self.new_label("sgn_diff_a_neg")  # left neg, right pos: left < right
-        diff_a_pos = self.new_label("sgn_diff_a_pos")  # left pos, right neg: left > right
+        diff_a_neg = self.new_label(
+            "sgn_diff_a_neg"
+        )  # left neg, right pos: left < right
+        diff_a_pos = self.new_label(
+            "sgn_diff_a_pos"
+        )  # left pos, right neg: left > right
         same_sign = self.new_label("sgn_same")
         true_label = self.new_label("sgn_true")
         false_label = self.new_label("sgn_false")
@@ -396,27 +402,27 @@ class CodeGenerator:
         if is_16bit:
             # Sign of left is B's MSB (high byte of AB).
             # Sign of right is D's MSB (high byte of CD) — copy D→A to test.
-            self.emit(f"    JMP_B_POS {a_pos}")          # left non-negative
+            self.emit(f"    JMP_B_POS {a_pos}")  # left non-negative
             # Left negative: check right's high byte
             self.emit("    D>A")
-            self.emit(f"    JMP_A_POS {diff_a_neg}")     # right positive → left < right
-            self.emit(f"    JMP {same_sign}")             # both negative
+            self.emit(f"    JMP_A_POS {diff_a_neg}")  # right positive → left < right
+            self.emit(f"    JMP {same_sign}")  # both negative
 
             self.emit(f"{a_pos}:")
             # Left non-negative: check right's high byte
             self.emit("    D>A")
-            self.emit(f"    JMP_A_POS {same_sign}")      # both positive
-            self.emit(f"    JMP {diff_a_pos}")            # left pos, right neg
+            self.emit(f"    JMP_A_POS {same_sign}")  # both positive
+            self.emit(f"    JMP {diff_a_pos}")  # left pos, right neg
         else:
             # 8-bit: sign of left is A's MSB, sign of right is B's MSB.
             self.emit(f"    JMP_A_POS {a_pos}")
             # A negative: check B
-            self.emit(f"    JMP_B_POS {diff_a_neg}")     # B positive → A < B
-            self.emit(f"    JMP {same_sign}")             # both negative
+            self.emit(f"    JMP_B_POS {diff_a_neg}")  # B positive → A < B
+            self.emit(f"    JMP {same_sign}")  # both negative
 
             self.emit(f"{a_pos}:")
             # A non-negative: check B
-            self.emit(f"    JMP_B_POS {same_sign}")      # both positive
+            self.emit(f"    JMP_B_POS {same_sign}")  # both positive
             self.emit(f"    JMP {diff_a_pos}")
 
         # Left < right case (left neg, right pos)
@@ -517,12 +523,16 @@ class CodeGenerator:
             if not isinstance(expr.operand, Identifier):
                 raise CodeGenError("++ only supported for variables")
             label, var_info = self.resolve_var(expr.operand.name)
-            self._generate_inc_dec(label, var_info["size"], is_increment=True, postfix=expr.postfix)
+            self._generate_inc_dec(
+                label, var_info["size"], is_increment=True, postfix=expr.postfix
+            )
         elif expr.op == "--":
             if not isinstance(expr.operand, Identifier):
                 raise CodeGenError("-- only supported for variables")
             label, var_info = self.resolve_var(expr.operand.name)
-            self._generate_inc_dec(label, var_info["size"], is_increment=False, postfix=expr.postfix)
+            self._generate_inc_dec(
+                label, var_info["size"], is_increment=False, postfix=expr.postfix
+            )
         elif expr.op == "&":
             # Address-of: produce the variable's static address in AB
             if not isinstance(expr.operand, Identifier):
@@ -570,9 +580,8 @@ class CodeGenerator:
 
     def _emit_array_base(self, array_expr: "Expression") -> None:
         """Load array base address into AB. May use CD as scratch."""
-        if (
-            isinstance(array_expr, Identifier)
-            and isinstance(array_expr.resolved_type, ArrayType)
+        if isinstance(array_expr, Identifier) and isinstance(
+            array_expr.resolved_type, ArrayType
         ):
             label, _ = self.resolve_var(array_expr.name)
             self.emit(f"    SET_AB #{label}")
@@ -598,7 +607,7 @@ class CodeGenerator:
             idx_type = expr.index.resolved_type
             if self.is_8bit_type(idx_type):
                 self.generate_expression(expr.index, "A")
-                self.emit("    0>B")       # zero-extend first (preserves carry on shift)
+                self.emit("    0>B")  # zero-extend first (preserves carry on shift)
                 if elem_size == 2:
                     self.emit("    AB<<")  # scale ×2 as 16-bit
             else:
@@ -613,9 +622,11 @@ class CodeGenerator:
             self.emit("    AB>CD")
             self.emit("    POP_B")
             self.emit("    POP_A")
-            self.emit("    AB+CD")   # AB = scaled_index + base
+            self.emit("    AB+CD")  # AB = scaled_index + base
 
-    def _generate_array_access_read(self, expr: ArrayAccess, result_reg: str = "A") -> None:
+    def _generate_array_access_read(
+        self, expr: ArrayAccess, result_reg: str = "A"
+    ) -> None:
         """Generate a read from arr[i] into result_reg."""
         self._compute_array_address(expr)
         elem_type = expr.resolved_type
@@ -646,14 +657,17 @@ class CodeGenerator:
             if is_8bit:
                 self.emit("    GH>AB")
                 self.emit("    AB>CD")
-                self.emit("    LOAD_A_CD")   # current value → A
-                self.emit("    PUSH_A")       # save LHS
-                self.generate_expression(expr.value, "A")   # RHS → A
-                self.emit("    A>B")          # RHS → B
-                self.emit("    POP_A")        # LHS → A
+                self.emit("    LOAD_A_CD")  # current value → A
+                self.emit("    PUSH_A")  # save LHS
+                self.generate_expression(expr.value, "A")  # RHS → A
+                self.emit("    A>B")  # RHS → B
+                self.emit("    POP_A")  # LHS → A
                 op_map_8 = {
-                    "+=": "ADD", "-=": "SUB",
-                    "&=": "AND", "|=": "OR", "^=": "XOR",
+                    "+=": "ADD",
+                    "-=": "SUB",
+                    "&=": "AND",
+                    "|=": "OR",
+                    "^=": "XOR",
                 }
                 if expr.op in op_map_8:
                     self.emit(f"    {op_map_8[expr.op]}")
@@ -666,13 +680,13 @@ class CodeGenerator:
                 # 16-bit compound
                 self.emit("    GH>AB")
                 self.emit("    AB>CD")
-                self.emit("    LO_AB_CD")    # current value → AB
+                self.emit("    LO_AB_CD")  # current value → AB
                 self.emit("    PUSH_A")
-                self.emit("    PUSH_B")      # save LHS (16-bit)
+                self.emit("    PUSH_B")  # save LHS (16-bit)
                 self.generate_expression(expr.value, "AB")  # RHS → AB
-                self.emit("    AB>CD")       # RHS → CD
+                self.emit("    AB>CD")  # RHS → CD
                 self.emit("    POP_B")
-                self.emit("    POP_A")       # LHS → AB
+                self.emit("    POP_A")  # LHS → AB
                 op_map_16 = {"+=": "AB+CD", "-=": "AB-CD"}
                 if expr.op in op_map_16:
                     self.emit(f"    {op_map_16[expr.op]}")

@@ -72,7 +72,9 @@ class Lexer:
         # col = current scan position within `original` (not the stripped copy).
         # We work on `remaining` which is a suffix of `original` starting at col.
         col = len(original) - len(original.lstrip())
-        remaining = original[col:comment_pos if comment_pos != -1 else len(original)].rstrip()
+        remaining = original[
+            col : comment_pos if comment_pos != -1 else len(original)
+        ].rstrip()
 
         # Check for label at start of line (global or local)
         match = re.match(
@@ -81,7 +83,7 @@ class Lexer:
         if match:
             self.tokens.append(Token(TokenType.LABEL, match.group(1), line_num, col))
             col += match.end()
-            remaining = remaining[match.end():]
+            remaining = remaining[match.end() :]
             ws = len(remaining) - len(remaining.lstrip())
             col += ws
             remaining = remaining[ws:]
@@ -90,10 +92,12 @@ class Lexer:
         has_directive = False
         match = re.match(r"^(\.[A-Z]+)", remaining, re.IGNORECASE)
         if match:
-            self.tokens.append(Token(TokenType.DIRECTIVE, match.group(1).upper(), line_num, col))
+            self.tokens.append(
+                Token(TokenType.DIRECTIVE, match.group(1).upper(), line_num, col)
+            )
             has_directive = True
             col += match.end()
-            after = remaining[match.end():]
+            after = remaining[match.end() :]
             col += len(after) - len(after.lstrip())
             remaining = after.lstrip()
 
@@ -101,9 +105,11 @@ class Lexer:
         if remaining and not has_directive:
             match = re.match(r"^([A-Z0-9_][A-Z0-9_>+\-<]*)", remaining, re.IGNORECASE)
             if match:
-                self.tokens.append(Token(TokenType.MNEMONIC, match.group(1).upper(), line_num, col))
+                self.tokens.append(
+                    Token(TokenType.MNEMONIC, match.group(1).upper(), line_num, col)
+                )
                 col += match.end()
-                after = remaining[match.end():]
+                after = remaining[match.end() :]
                 col += len(after) - len(after.lstrip())
                 remaining = after.lstrip()
 
@@ -113,7 +119,7 @@ class Lexer:
             ws = re.match(r"^\s+", remaining)
             if ws:
                 col += ws.end()
-                remaining = remaining[ws.end():]
+                remaining = remaining[ws.end() :]
                 continue
 
             # Immediate value (#)
@@ -129,7 +135,7 @@ class Lexer:
                 value = int(match.group(1), 16)
                 self.tokens.append(Token(TokenType.NUMBER, str(value), line_num, col))
                 col += match.end()
-                remaining = remaining[match.end():]
+                remaining = remaining[match.end() :]
                 continue
 
             # Binary number (%XXXXXXXX)
@@ -138,32 +144,38 @@ class Lexer:
                 value = int(match.group(1), 2)
                 self.tokens.append(Token(TokenType.NUMBER, str(value), line_num, col))
                 col += match.end()
-                remaining = remaining[match.end():]
+                remaining = remaining[match.end() :]
                 continue
 
             # Character literal ('X')
             match = re.match(r"^'(.)'", remaining)
             if match:
-                self.tokens.append(Token(TokenType.CHAR, str(ord(match.group(1))), line_num, col))
+                self.tokens.append(
+                    Token(TokenType.CHAR, str(ord(match.group(1))), line_num, col)
+                )
                 col += match.end()
-                remaining = remaining[match.end():]
+                remaining = remaining[match.end() :]
                 continue
 
             # Decimal number
             match = re.match(r"^(\d+)", remaining)
             if match:
-                self.tokens.append(Token(TokenType.NUMBER, match.group(1), line_num, col))
+                self.tokens.append(
+                    Token(TokenType.NUMBER, match.group(1), line_num, col)
+                )
                 col += match.end()
-                remaining = remaining[match.end():]
+                remaining = remaining[match.end() :]
                 continue
 
             # String literal
             if remaining.startswith('"'):
                 match = re.match(r'^"([^"]*)"', remaining)
                 if match:
-                    self.tokens.append(Token(TokenType.STRING, match.group(1), line_num, col))
+                    self.tokens.append(
+                        Token(TokenType.STRING, match.group(1), line_num, col)
+                    )
                     col += match.end()
-                    remaining = remaining[match.end():]
+                    remaining = remaining[match.end() :]
                     continue
 
             # Comma
@@ -178,9 +190,11 @@ class Lexer:
                 r"^(\.[a-zA-Z_][a-zA-Z0-9_]*|[a-zA-Z_][a-zA-Z0-9_]*)", remaining
             )
             if match:
-                self.tokens.append(Token(TokenType.IDENTIFIER, match.group(1), line_num, col))
+                self.tokens.append(
+                    Token(TokenType.IDENTIFIER, match.group(1), line_num, col)
+                )
                 col += match.end()
-                remaining = remaining[match.end():]
+                remaining = remaining[match.end() :]
                 continue
 
             # Unknown character — stop silently (existing behaviour)

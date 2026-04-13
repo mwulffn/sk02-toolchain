@@ -29,6 +29,7 @@ from .ast_nodes import (
     Program,
     ReturnStmt,
     Statement,
+    StringLiteral,
     Type,
     UnaryOp,
     UntilLoop,
@@ -37,6 +38,7 @@ from .ast_nodes import (
 )
 from .call_graph import CallGraph
 from .emitter import Emitter
+from .type_checker import _INTRINSIC_NAMES
 
 
 class CodeGenError(Exception):
@@ -66,6 +68,9 @@ class CodeGenerator:
         self._exit_labels: list[str] = []  # stack of loop exit labels
         self.needs_multiply = False
         self.needs_divide = False
+        self.needs_divide_16 = False
+        self._anon_strings: list[tuple[str, list[int]]] = []
+        self._anon_str_counter: int = 0
 
     def emit(self, line: str) -> None:
         self._em.emit(line)
@@ -105,6 +110,7 @@ class CodeGenerator:
         scope: str | None = None,
         address: int | None = None,
         initial_value: int | None = None,
+        initial_values: list[int] | None = None,
     ) -> None:
         """Register a variable for codegen."""
         if isinstance(var_type, ArrayType):
@@ -124,6 +130,7 @@ class CodeGenerator:
             "size": size,
             "address": address,
             "initial_value": initial_value,
+            "initial_values": initial_values,
         }
 
     # ------------------------------------------------------------------
@@ -149,6 +156,7 @@ class CodeGenerator:
                     decl.type,
                     address=decl.address,
                     initial_value=decl.initial_value,
+                    initial_values=decl.initial_values,
                 )
             elif isinstance(decl, (ProcDecl, FuncDecl)):
                 for p in decl.params:
@@ -186,6 +194,9 @@ class CodeGenerator:
         self.emit("")
         self._em.emit_comment("Data section")
         self._emit_data_section()
+
+        # SET directives (poke arbitrary addresses in output ROM)
+        self._emit_set_directives(program)
 
         return self._em.get_output()
 
@@ -311,6 +322,10 @@ class CodeGenerator:
         if info["size"] == 1:
             self.emit(f"    STORE_A {label}")
         else:
+            # Zero-extend if RHS is 8-bit but target is 16-bit
+            rhs_type = self._expr_resolved_type(stmt.value)
+            if rhs_type and not _is_16bit(rhs_type):
+                self.emit("    0>B")
             self.emit(f"    SET_CD #{label}")
             self.emit("    ST_AB_CD")
 
@@ -328,9 +343,7 @@ class CodeGenerator:
 
         # Store through GH pointer
         ptr_type = self._expr_resolved_type(deref.operand)
-        pointee_16 = isinstance(ptr_type, PointerType) and _is_16bit(
-            ptr_type.base_type
-        )
+        pointee_16 = isinstance(ptr_type, PointerType) and _is_16bit(ptr_type.base_type)
         if pointee_16:
             self.emit("    STORE_A_GH")
             self.emit("    GH++")
@@ -341,7 +354,10 @@ class CodeGenerator:
     def _emit_proc_call(self, stmt: ProcCall) -> None:
         """Emit procedure call with arguments."""
         self._emit_call_args(stmt.arguments)
-        self.emit(f"    GOSUB _{stmt.name}")
+        if stmt.name in _INTRINSIC_NAMES:
+            self._emit_intrinsic(stmt.name)
+        else:
+            self.emit(f"    GOSUB _{stmt.name}")
 
     def _emit_call_args(self, args: list[Expression]) -> None:
         """Emit argument passing for a call."""
@@ -632,6 +648,14 @@ class CodeGenerator:
         elif isinstance(expr, ArrayAccess):
             self._emit_array_load(expr)
 
+        elif isinstance(expr, StringLiteral):
+            s = expr.value
+            bytes_data = [len(s)] + [ord(c) for c in s]
+            label = f"_str_{self._anon_str_counter}"
+            self._anon_str_counter += 1
+            self._anon_strings.append((label, bytes_data))
+            self.emit(f"    SET_AB #{label}")
+
     def _emit_deref_load(self, expr: Dereference) -> None:
         """Load value through a pointer: ptr^ → A (or AB for 16-bit pointee)."""
         # Evaluate the pointer expression into AB
@@ -684,10 +708,15 @@ class CodeGenerator:
             self._emit_comparison(expr)
             return
 
+        left_type = self._expr_resolved_type(expr.left)
+        right_type = self._expr_resolved_type(expr.right)
+
         # Evaluate left
         self._emit_expr(expr.left)
 
         if is_16:
+            if not _is_16bit(left_type):
+                self.emit("    0>B")  # zero-extend 8-bit left operand to 16-bit
             self.emit("    PUSH_A")
             self.emit("    PUSH_B")
         else:
@@ -697,6 +726,8 @@ class CodeGenerator:
         self._emit_expr(expr.right)
 
         if is_16:
+            if not _is_16bit(right_type):
+                self.emit("    0>B")  # zero-extend 8-bit right operand to 16-bit
             self.emit("    AB>CD")
             self.emit("    POP_B")
             self.emit("    POP_A")
@@ -717,8 +748,7 @@ class CodeGenerator:
             self.emit("    XOR")
         elif expr.op == "*":
             if is_16:
-                # AB = left, CD = right — already in place
-                pass
+                pass  # AB = left, CD = right — __rt_mul handles full 16-bit
             else:
                 # A = left, B = right → need AB=(left,0), CD=(right,0)
                 self.emit("    PUSH_A")
@@ -731,7 +761,11 @@ class CodeGenerator:
             self.needs_multiply = True
         elif expr.op in ("/", "mod"):
             if is_16:
-                pass
+                # AB = dividend, CD = divisor — use 16-bit divide routine
+                self.emit("    GOSUB __rt_div_16")
+                if expr.op == "mod":
+                    self.emit("    CD>AB")  # remainder in CD → move to AB
+                self.needs_divide_16 = True
             else:
                 # A = dividend, B = divisor → need A=dividend, C=divisor
                 self.emit("    PUSH_A")
@@ -740,10 +774,10 @@ class CodeGenerator:
                 self.emit("    B>C")
                 self.emit("    0>B")
                 self.emit("    POP_A")
-            self.emit("    GOSUB __rt_div")
-            if expr.op == "mod":
-                self.emit("    C>A")
-            self.needs_divide = True
+                self.emit("    GOSUB __rt_div")
+                if expr.op == "mod":
+                    self.emit("    C>A")
+                self.needs_divide = True
         elif expr.op == "lsh":
             self._emit_shift_left(is_16)
         elif expr.op == "rsh":
@@ -870,7 +904,41 @@ class CodeGenerator:
     def _emit_func_call(self, expr: FunctionCall) -> None:
         """Emit function call in expression context."""
         self._emit_call_args(expr.arguments)
-        self.emit(f"    GOSUB _{expr.name}")
+        if expr.name in _INTRINSIC_NAMES:
+            self._emit_intrinsic(expr.name)
+        else:
+            self.emit(f"    GOSUB _{expr.name}")
+
+    def _emit_intrinsic(self, name: str) -> None:
+        """Emit inline instructions for an I/O intrinsic."""
+        if name == "gpioread":
+            self.emit("    GPIO>A")
+        elif name == "gpiowrite":
+            self.emit("    A>GPIO")
+        elif name == "readx":
+            self.emit("    X>A")
+        elif name == "ready":
+            self.emit("    Y>A")
+        elif name == "out0write":
+            self.emit("    A>OUT_0")
+        elif name == "out1write":
+            self.emit("    A>OUT_1")
+        elif name == "outwrite":
+            self.emit("    AB>OUT")
+        elif name == "hwivalue":
+            self.emit("    HWI>A")
+        elif name == "triggerhwi":
+            self.emit("    TRG_HWI")
+        elif name == "clearinterrupt":
+            self.emit("    CLEAR_INTER")
+        elif name == "interruptflag":
+            skip = self.new_label("Linter")
+            self.emit("    SET_A #1")
+            self.emit(f"    JMP_INTER {skip}")
+            self.emit("    SET_A #0")
+            self.emit(f"{skip}:")
+        else:
+            raise CodeGenError(f"Unknown intrinsic: {name}")
 
     def _emit_array_store(self, stmt: AssignmentStmt) -> None:
         """Emit arr(index) = value: compute address into GH, eval RHS, store."""
@@ -995,12 +1063,56 @@ class CodeGenerator:
             self.emit("    POP_E")
             self.emit("    RETURN")
 
+        if self.needs_divide_16:
+            self.emit("")
+            self._em.emit_comment("16-bit divide: AB=dividend, CD=divisor.")
+            self._em.emit_comment(
+                "Returns: AB=quotient, CD=remainder. Halts on divide by zero."
+            )
+            self.emit("__rt_div_16:")
+            self.emit("    PUSH_E")
+            self.emit("    PUSH_F")
+            self.emit("    PUSH_G")
+            self.emit("    PUSH_H")
+            # Save dividend so divisor check (which uses A/B) doesn't clobber it
+            self.emit("    AB>GH")  # GH = dividend (temp)
+            self.emit("    C>A")
+            self.emit("    D>B")
+            self.emit("    OR")  # A = C | D; zero flag if divisor == 0
+            self.emit("    JMP_ZERO __rt_div_16_halt")
+            self.emit("    CD>EF")  # EF = divisor (save)
+            self.emit("    GH>AB")  # AB = dividend (restore)
+            # GH = 0 (quotient): zero G and H via A without losing A
+            self.emit("    PUSH_A")
+            self.emit("    0>A")
+            self.emit("    A>G")
+            self.emit("    A>H")
+            self.emit("    POP_A")  # AB = dividend, GH = 0
+            # AB = remainder (starts as full dividend), EF = divisor, GH = quotient
+            self.emit("__rt_div_16_loop:")
+            self.emit("    EF>CD")  # CD = divisor
+            self.emit("    CMP_16")  # overflow if AB < CD
+            self.emit("    JMP_OVER __rt_div_16_done")
+            self.emit("    AB-CD")  # remainder -= divisor
+            self.emit("    GH++")  # quotient++
+            self.emit("    JMP __rt_div_16_loop")
+            self.emit("__rt_div_16_halt:")
+            self.emit("    HALT")
+            self.emit("__rt_div_16_done:")
+            self.emit("    AB>CD")  # CD = remainder
+            self.emit("    GH>AB")  # AB = quotient
+            self.emit("    POP_H")
+            self.emit("    POP_G")
+            self.emit("    POP_F")
+            self.emit("    POP_E")
+            self.emit("    RETURN")
+
     # ------------------------------------------------------------------
     # Data section
     # ------------------------------------------------------------------
 
     def _emit_data_section(self) -> None:
-        """Emit storage for all variables."""
+        """Emit storage for all variables and anonymous string literals."""
         for key, info in self._var_labels.items():
             label = info["label"]
             address = info.get("address")
@@ -1017,12 +1129,20 @@ class CodeGenerator:
                 arr_type = var_type
                 self._em.emit_label(label)
                 elem_size = 1 if _is_8bit(arr_type.base_type) else 2
-                count = arr_type.size
-                zeros = ", ".join(["0"] * count)
-                if elem_size == 1:
-                    self.emit(f"    .BYTE {zeros}")
+                init_vals = info.get("initial_values")
+                if init_vals is not None:
+                    data = ", ".join(str(v) for v in init_vals)
+                    if elem_size == 1:
+                        self.emit(f"    .BYTE {data}")
+                    else:
+                        self.emit(f"    .WORD {data}")
                 else:
-                    self.emit(f"    .WORD {zeros}")
+                    count = arr_type.size
+                    zeros = ", ".join(["0"] * count)
+                    if elem_size == 1:
+                        self.emit(f"    .BYTE {zeros}")
+                    else:
+                        self.emit(f"    .WORD {zeros}")
             else:
                 self._em.emit_label(label)
                 if init is not None:
@@ -1035,3 +1155,18 @@ class CodeGenerator:
                         self.emit("    .BYTE 0")
                     else:
                         self.emit("    .WORD 0")
+
+        # Anonymous string literals allocated during expression codegen
+        for label, bytes_data in self._anon_strings:
+            self._em.emit_label(label)
+            data = ", ".join(str(v) for v in bytes_data)
+            self.emit(f"    .BYTE {data}")
+
+    def _emit_set_directives(self, program: Program) -> None:
+        """Emit SET directives as .ORG + .WORD patches at end of output."""
+        for directive in program.directives:
+            val = directive.value
+            label = f"_{val}" if isinstance(val, str) else str(val)
+            self.emit("")
+            self.emit(f".ORG ${directive.target_addr:04X}")
+            self.emit(f"    .WORD {label}")

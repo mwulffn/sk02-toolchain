@@ -1448,7 +1448,9 @@ class TestInt16Arithmetic:
             }
         """)
         result = cpu.A | (cpu.B << 8)
-        assert result == 400, f"200 + 200 should be 400, got {result} (A={cpu.A} B={cpu.B})"
+        assert result == 400, (
+            f"200 + 200 should be 400, got {result} (A={cpu.A} B={cpu.B})"
+        )
 
     def test_int_add_large_values(self):
         """int 500 + 300 = 800 — both operands > 255."""
@@ -1460,7 +1462,9 @@ class TestInt16Arithmetic:
             }
         """)
         result = cpu.A | (cpu.B << 8)
-        assert result == 800, f"500 + 300 should be 800, got {result} (A={cpu.A} B={cpu.B})"
+        assert result == 800, (
+            f"500 + 300 should be 800, got {result} (A={cpu.A} B={cpu.B})"
+        )
 
     def test_int_sub_no_borrow(self):
         """int 500 - 300 = 200."""
@@ -1877,12 +1881,15 @@ class TestCharLiterals:
 
     def test_char_literal_in_comparison(self):
         """x == 'A' works as comparison."""
-        cpu = run_c("""
+        cpu = run_c(
+            """
             char main(char x) {
                 if (x == 'A') return 1;
                 return 0;
             }
-        """, A=65)
+        """,
+            A=65,
+        )
         assert cpu.A == 1, f"65 == 'A' should be true, got {cpu.A}"
 
 

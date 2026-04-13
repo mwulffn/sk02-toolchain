@@ -1,8 +1,8 @@
 # SK-02 Action! Compiler — Progress
 
-## Status: Core language features complete
+## Status: Core language features complete + ARRAY initializers + I/O intrinsics + 16-bit arithmetic + SET directive + string literals in expressions
 
-260 tests passing. Full pipeline working end-to-end (Action! source → assembly → assembler → simulator).
+657 tests passing. Full pipeline working end-to-end (Action! source → assembly → assembler → simulator).
 
 ## Pipeline
 
@@ -32,6 +32,8 @@ The optimizer slot is reserved but not yet implemented. It will be an assembly-l
 - `bp^` dereference as expression and as lvalue (`bp^ = 42`)
 - `@x` address-of unary operator
 - `BYTE ARRAY buf(256)`, `CARD ARRAY tbl(100)` declarations
+- `BYTE ARRAY msg = "Hello World"` string initializer (length byte + char bytes)
+- `BYTE ARRAY digits = [0 1 2 3 4]` bracket initializer (space-separated constants)
 - `buf(i)` array element access as expression and as lvalue — disambiguated from function calls via a tracked set of declared array names
 
 ### Type Checker (`symbol_table.py`, `type_checker.py`)
@@ -68,10 +70,21 @@ The optimizer slot is reserved but not yet implemented. It will be an assembly-l
 - Calling convention: param 1 in A/AB, param 2 in B/CD, params 3+ on data stack
 - Callee-side param saves to static storage
 - FUNC return values in A (8-bit) or AB (16-bit)
-- Data section: `.BYTE`/`.WORD` for storage, `.EQU` for address-placed variables
+- Data section: `.BYTE`/`.WORD` for storage, `.EQU` for address-placed variables, initialized values for string/bracket array initializers
 - Shift left/right via loop (no hardware barrel shifter)
 - POINTER: `@x` → `SET_AB #_x`; `ptr^` read via `AB>CD`/`LOAD_A_CD`; `ptr^ = val` write via GH parking
 - ARRAY: element access via `base + index * elem_size`; storage as `.BYTE`/`.WORD` sequences
+
+### I/O Intrinsics (`type_checker.py`, `codegen.py`, `call_graph.py`)
+- All 11 SK-02 hardware intrinsics predeclared in symbol table at `TypeChecker.__init__`
+- Intrinsics compile to inline instructions — no `GOSUB` overhead
+- `GpioRead()` → `GPIO>A`, `GpioWrite(val)` → `A>GPIO`
+- `ReadX()` → `X>A`, `ReadY()` → `Y>A`
+- `Out0Write(val)` → `A>OUT_0`, `Out1Write(val)` → `A>OUT_1`, `OutWrite(lo, hi)` → `AB>OUT`
+- `HwiValue()` → `HWI>A`, `TriggerHwi()` → `TRG_HWI`
+- `ClearInterrupt()` → `CLEAR_INTER`
+- `InterruptFlag()` → `SET_A #1` / `JMP_INTER` / `SET_A #0` sequence
+- Call graph skips intrinsic names (they are inlined, not real call targets)
 
 ### Orchestration (`compiler.py`, `cli.py`, `__init__.py`)
 - `compile_string(source)` and `compile_file(input, output)` API
@@ -82,23 +95,33 @@ The optimizer slot is reserved but not yet implemented. It will be an assembly-l
 
 ### Language Features (in approximate priority order)
 
-1. **ARRAY string/bracket initializers** — `BYTE ARRAY message = "Hello World"` and `BYTE ARRAY digits = [0 1 2 3 4 5 6 7]`. Array declarations with address placement (`= $8000`) work. Initializer syntax not yet parsed.
-
-2. **TYPE/Records** — `TYPE Point = [BYTE x, BYTE y]`, field access with `.`. Fully deferred.
+1. **TYPE/Records** — `TYPE Point = [BYTE x, BYTE y]`, field access with `.`. Fully deferred.
 
 3. **DEFINE** — Compile-time text substitution macros. Should be a preprocessor pass before lexing.
 
 4. **INCLUDE** — File inclusion. Also a preprocessor pass.
 
-5. **SET** — `SET $FFFE = entry_point`. Direct byte-poking in output binary.
+5. ~~**SET**~~ — Done. `SET $FFFE = entry_point` emits `.ORG`/`.WORD` patch at end of assembly output. Target is numeric constant; value is numeric constant or identifier (resolved to assembly label). Assembler's sparse `BinaryWriter` supports non-monotonic `.ORG`.
 
 6. **MODULE** — Scope boundaries for identifier reuse across modules.
 
-7. **INTERRUPT PROC** — `INTERRUPT PROC OnTimer()`. Requires: call graph analysis for register save/restore sets, `PUSH_x`/`POP_x` prologue/epilogue, `RETURN_HWI` instead of `RETURN`, `SET_IV` in startup, volatile variable detection.
+7. **INTERRUPT PROC** — `INTERRUPT PROC OnTimer()`. Requires: call graph analysis for register save/restore sets, `PUSH_x`/`POP_x` prologue/epilogue, `RETURN_HWI` instead of `RETURN`, `SET_IV` in startup, volatile variable detection. Blocked on simulator work (see below).
 
-8. **String constants in expressions** — Strings are tokenized but not usable in expressions/assignments. Need string literal storage and BYTE ARRAY representation.
+8. ~~**String constants in expressions**~~ — Done. String literal in expression context (`p = "Hello"`, `f("msg")`) allocates an anonymous BYTE ARRAY `_str_N` in the data section (length-prefix layout: `[len, c0, c1, ...]`) and loads its address into AB via `SET_AB #_str_N`. Type is `PointerType(ByteType)`. String dedup is a future optimization. Strings > 255 chars raise a compile error.
 
-9. **I/O Intrinsics** — `GpioRead()`, `GpioWrite()`, `ReadX()`, `ReadY()`, `Out0Write()`, `Out1Write()`, `OutWrite()`, `HwiValue()`, `TriggerHwi()`, `InterruptFlag()`, `ClearInterrupt()`. These are predeclared functions that compile to inline instructions. Need to be registered in the symbol table automatically and handled specially in codegen.
+9. ~~**I/O Intrinsics**~~ — Done. All 11 intrinsics implemented.
+
+### Simulator Gaps
+
+The following opcodes are currently no-ops in `simulator/opcodes.py` and need to be implemented before the corresponding compiler features can be fully tested end-to-end:
+
+- `SET_IV` / `AB>IV` / `IV>AB` — interrupt vector register
+- `HWI>A` — read hardware interrupt value register
+- `TRG_HWI` — software-trigger hardware interrupt
+- `RETURN_HWI` — return from interrupt handler (pop return stack + clear HWI busy flag)
+- Hardware interrupt auto-dispatch — `cpu.run()` currently never fires an interrupt; needs to check a pending flag and jump to IVect between instructions
+
+These are needed together to test `INTERRUPT PROC` end-to-end.
 
 ### Code Generation Gaps
 
@@ -110,19 +133,19 @@ The optimizer slot is reserved but not yet implemented. It will be an assembly-l
 
 13. **Signed 16-bit FOR loops crossing zero** — FOR with INT loop variable and negative limit (e.g., `FOR i = 3 TO -2 STEP -1`) requires signed `CMP_16`. Currently only unsigned comparison is used, so negative limits are treated as large positive values.
 
-14. **16-bit multiply/divide calling convention** — The runtime routines operate on 16-bit register pairs but the 16-bit setup path in `_emit_binary_op` is a no-op placeholder (AB and CD are already in place). Needs verification with actual 16-bit `*`/`/`/`MOD` tests.
+14. ~~**16-bit multiply/divide**~~ — Done. `__rt_mul` was already a correct 16×16→16 routine (the `pass` in the 16-bit path was accidentally correct). Added `__rt_div_16` (new routine using AB/CD, restoring-subtraction algorithm). Fixed zero-extension bug where BYTE literals assigned to CARD variables left B with garbage (B not zeroed before `ST_AB_CD`). Fixed mixed BYTE/CARD operands in binary expressions. 6 new e2e tests.
 
 ## Test Structure
 
 ```
 tests/
   test_action_lexer.py      — 58 tests (keywords, numbers, strings, operators, comments, errors)
-  test_action_parser.py      — 61 tests (declarations, expressions, statements, pointer, array, errors)
-  test_action_types.py       — 28 tests (symbol table, type checker, widening, pointer, array)
+  test_action_parser.py      — 70 tests (declarations, expressions, statements, pointer, array, SET, string literal, errors)
+  test_action_types.py       — 50 tests (symbol table, type checker, widening, pointer, array, I/O intrinsics, SET, string literal)
   test_action_constfold.py   — 21 tests (folding, no-fold, overflow)
   test_action_callgraph.py   — 11 tests (construction, recursion, overlap)
-  test_action_codegen.py     — 47 tests (structure, vars, assignment, arithmetic, comparisons, control flow, calls, runtime routines, pointer, array)
-  test_action_e2e.py         — 34 tests (full pipeline through simulator, including multiply/divide, 16-bit FOR, negative STEP, pointer, array)
+  test_action_codegen.py     — 70 tests (structure, vars, assignment, arithmetic, comparisons, control flow, calls, runtime routines, pointer, array, array initializers, negative literal masking, I/O intrinsics, SET directive, string literal)
+  test_action_e2e.py         — 62 tests (full pipeline through simulator, including multiply/divide, 16-bit mul/div, 16-bit FOR, negative STEP, pointer, array, array initializers, I/O intrinsics, SET directive, string literal)
 ```
 
 Helpers follow the same pattern as `test_compiler.py`: `asm_lines()` for codegen checks, `run_action()` for end-to-end simulation.

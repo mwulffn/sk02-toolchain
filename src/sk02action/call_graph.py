@@ -23,6 +23,7 @@ from .ast_nodes import (
     UntilLoop,
     WhileLoop,
 )
+from .type_checker import _INTRINSIC_NAMES
 
 
 class RecursionError(Exception):
@@ -54,7 +55,8 @@ class CallGraph:
 
     def _collect_calls_stmt(self, stmt: Statement, calls: set[str]) -> None:
         if isinstance(stmt, ProcCall):
-            calls.add(stmt.name)
+            if stmt.name not in _INTRINSIC_NAMES:
+                calls.add(stmt.name)
             for arg in stmt.arguments:
                 self._collect_calls_expr(arg, calls)
         elif isinstance(stmt, AssignmentStmt):
@@ -90,7 +92,8 @@ class CallGraph:
 
     def _collect_calls_expr(self, expr: Expression, calls: set[str]) -> None:
         if isinstance(expr, FunctionCall):
-            calls.add(expr.name)
+            if expr.name not in _INTRINSIC_NAMES:
+                calls.add(expr.name)
             for arg in expr.arguments:
                 self._collect_calls_expr(arg, calls)
         elif isinstance(expr, BinaryOp):

@@ -3,4 +3,5 @@
 
 class CodeGenError(Exception):
     """Raised when code generation encounters an unsupported construct."""
+
     pass

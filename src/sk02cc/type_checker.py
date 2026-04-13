@@ -84,6 +84,7 @@ def _type_size(typ: Type) -> int:
 # Scope / symbol table
 # ---------------------------------------------------------------------------
 
+
 class _Scope:
     """Simple two-level scope: globals + one function-local frame."""
 
@@ -111,6 +112,7 @@ class _Scope:
 # Checker
 # ---------------------------------------------------------------------------
 
+
 class TypeChecker:
     """Annotates AST expression nodes with resolved_type."""
 
@@ -118,7 +120,6 @@ class TypeChecker:
         self._scope = _Scope()
         self._function_signatures: dict[str, list[Parameter]] = {}
         self._current_return_type: Type | None = None
-
 
     # ------------------------------------------------------------------
     # Declarations
@@ -183,9 +184,7 @@ class TypeChecker:
             pass  # no type checking needed
 
         else:
-            raise SemanticError(
-                f"Unknown statement type: {type(stmt).__name__}", 0, 0
-            )
+            raise SemanticError(f"Unknown statement type: {type(stmt).__name__}", 0, 0)
 
     # ------------------------------------------------------------------
     # Expressions  (mutates node.resolved_type in-place)
@@ -245,9 +244,7 @@ class TypeChecker:
             expr.resolved_type = elem
             return elem
 
-        raise SemanticError(
-            f"Unknown expression type: {type(expr).__name__}", 0, 0
-        )
+        raise SemanticError(f"Unknown expression type: {type(expr).__name__}", 0, 0)
 
     def _check_binary(self, expr: BinaryOp) -> Type:
         left_type = self._check_expr(expr.left)
